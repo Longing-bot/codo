@@ -10,38 +10,41 @@ import { ensureConfig } from './setup/index.js'
 
 const args = process.argv.slice(2)
 
-if (args.includes('--help')) {
-  console.log(`🦞 codo - AI coding assistant (CC architecture, model-agnostic)
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`🦞 codo - AI 编程助手（CC 架构，模型无关）
 
-Usage: codo [prompt] | codo --print [prompt] | codo --config | codo --setup | codo --help
-Options: -m/--model MODEL | --provider openai|anthropic|openrouter
-Slash commands: /help /clear /history /quit
-Env: OPENROUTER_API_KEY | OPENAI_API_KEY | ANTHROPIC_API_KEY`)
+用法: codo [提问] | codo --print [提问] | codo --config | codo --setup | codo --help
+选项: -m/--model 模型名 | --provider openai|anthropic|openrouter
+命令: /help /clear /compact /history /quit
+环境变量: OPENROUTER_API_KEY | OPENAI_API_KEY | ANTHROPIC_API_KEY`)
   process.exit(0)
 }
 
-// --config: show current config
+// --config: 显示当前配置
 if (args.includes('--config')) {
   const c = loadConfig()
-  const key = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY
-  console.log(`🦞 codo config\n  Key: ${c.apiKey ? c.apiKey.slice(0, 8) + '...' : '(not set)'}\n  URL: ${c.baseUrl}\n  Model: ${c.model}\n  Provider: ${detectProvider(c)}\n  Available: ${hasApiKey(c) ? '✅' : '❌'}`)
+  console.log(`🦞 codo 配置
+  密钥: ${c.apiKey ? c.apiKey.slice(0, 8) + '...' : '(未设置)'}
+  地址: ${c.baseUrl}
+  模型: ${c.model}
+  格式: ${detectProvider(c)}
+  状态: ${hasApiKey(c) ? '✅ 可用' : '❌ 未配置'}`)
   process.exit(0)
 }
 
-// --setup: force re-run interactive setup
+// --setup: 重新配置
 if (args.includes('--setup')) {
   const { join } = await import('path')
   const { homedir } = await import('os')
   const { unlinkSync, existsSync } = await import('fs')
   const cfg = join(homedir(), '.codo', 'config.json')
   if (existsSync(cfg)) unlinkSync(cfg)
-  console.log('🗑️ Config cleared. Re-running setup...\n')
   const config = await ensureConfig()
-  console.log('Done! Run `codo` to start using it.')
+  console.log('已完成！运行 codo 即可使用。')
   process.exit(0)
 }
 
-// First-run: check config, interactive setup if incomplete
+// 首次运行：检查配置，不完整则引导配置
 const config = await ensureConfig()
 
 const mi = args.indexOf('-m') !== -1 ? args.indexOf('-m') : args.indexOf('--model')
@@ -51,7 +54,7 @@ const prompt = args.filter(a => !a.startsWith('-') && a !== args[mi + 1]).join('
 if (process.stdin.isTTY && process.stdout.isTTY && !args.includes('--print')) {
   render(React.createElement(App, { initialPrompt: prompt }))
 } else {
-  if (!prompt) { console.log('🦞 codo (non-interactive). Use --help.'); process.exit(0) }
+  if (!prompt) { console.log('🦞 codo（非交互模式）。用 codo --help 查看用法。'); process.exit(0) }
 
   const cmdResult = processCommand(prompt)
   if (cmdResult) {
@@ -65,7 +68,7 @@ if (process.stdin.isTTY && process.stdout.isTTY && !args.includes('--print')) {
   if (msgs.length > 0) {
     console.log(`  ${getContextStats(msgs)}`)
     if (shouldCompact(msgs)) {
-      console.log('  ⚠️ Context is large. Consider /compact')
+      console.log('  ⚠️ 上下文较长，建议 /compact')
     }
   }
 
@@ -73,7 +76,7 @@ if (process.stdin.isTTY && process.stdout.isTTY && !args.includes('--print')) {
     onText: t => console.log(`\n${t}`),
     onToolStart: (n, a) => console.log(`\n🔧 ${n}(${a.length > 40 ? a.slice(0, 40) + '...' : a})`),
     onToolResult: (_, r) => console.log(`   ${r.content.split('\n')[0].slice(0, 60)}`),
-    onTurn: t => { if (t > 1) process.stdout.write(`\r⏳ turn ${t}`) },
+    onTurn: t => { if (t > 1) process.stdout.write(`\r⏳ 第 ${t} 轮`) },
     onError: e => console.error(`❌ ${e}`),
   })
 }
