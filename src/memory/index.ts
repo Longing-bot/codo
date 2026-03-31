@@ -1,4 +1,41 @@
-// ─── Memory & Context Management (CC pattern) ──────────────────────────────
+// ─── Token 预算管理（CC tokenBudget 风格）───────────────────────────────────
+// CC 在 token 到达 90% 预算时发送"继续工作，不要总结"的消息
+
+import { estimateMessageTokens } from './index.js'
+
+export interface BudgetTracker {
+  continuationCount: number
+  lastTurnTokens: number
+  startedAt: number
+}
+
+export function createBudgetTracker(): BudgetTracker {
+  return { continuationCount: 0, lastTurnTokens: 0, startedAt: Date.now() }
+}
+
+export type BudgetDecision = { action: 'continue' | 'stop'; nudgeMessage?: string }
+
+// CC 风格：检测是否需要 "continue" 提示
+export function checkBudget(tracker: BudgetTracker, messages: any[], budget: number = 80000): BudgetDecision {
+  const totalTokens = estimateMessageTokens(messages)
+  const pct = totalTokens / budget
+
+  // 90% 时提示继续（CC 风格）
+  if (pct >= 0.9 && tracker.continuationCount < 3) {
+    tracker.continuationCount++
+    return {
+      action: 'continue',
+      nudgeMessage: `已使用 ${Math.round(pct * 100)}% 的上下文 (${totalTokens.toLocaleString()} / ${budget.toLocaleString()} tokens)。继续工作，不要总结。`
+    }
+  }
+
+  // 100% 时停止
+  if (pct >= 1.0) {
+    return { action: 'stop' }
+  }
+
+  return { action: 'continue' }
+}
 export { COMPACT_PROMPT, buildCompactedMessages, shouldCompact, getCompactionRequest } from './compact.js'
 
 import { type Message } from '../config/index.js'

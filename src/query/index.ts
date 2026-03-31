@@ -4,6 +4,7 @@ import { callLLM } from '../api/index.js'
 import { findTool, toOpenAI, toAnthropic, ToolResult } from '../tools/index.js'
 import { buildSystemPrompt } from '../prompts/system.js'
 import { preToolValidate, postToolProcess } from '../hooks/index.js'
+import { createBudgetTracker, checkBudget } from '../memory/index.js'
 
 const MAX_TURNS = 80
 
@@ -31,9 +32,21 @@ export async function runQuery(
   messages.push({ role: 'user', content: userMessage })
 
   const tools = detectProvider(config) === 'anthropic' ? toAnthropic() : toOpenAI()
+  const budget = createBudgetTracker()
 
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
     onTurn?.(turn)
+
+    // CC 风格：检查 token 预算
+    const decision = checkBudget(budget, messages)
+    if (decision.action === 'stop') {
+      onError?.('上下文已满。请使用 /clear 清除历史或 /compact 压缩。')
+      break
+    }
+    // 如果需要 continue 提示，加入系统消息
+    if (decision.nudgeMessage && !messages.some(m => m.content === decision.nudgeMessage)) {
+      messages.push({ role: 'user', content: decision.nudgeMessage })
+    }
 
     let response
     try {

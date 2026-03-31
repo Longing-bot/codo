@@ -314,11 +314,11 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
       {/* Footer (CC style: status bar) */}
       {!running && !pendingTool && (
         <Box marginTop={1} borderTop borderColor="gray" borderStyle="single" paddingLeft={1}>
+          <Text dimColor>{config.model}</Text>
+          <Text dimColor> · </Text>
           <Text dimColor>/help</Text>
           <Text dimColor> · </Text>
           <Text dimColor>/clear</Text>
-          <Text dimColor> · </Text>
-          <Text dimColor>/compact</Text>
           <Text dimColor> · </Text>
           <Text dimColor>/quit</Text>
         </Box>
