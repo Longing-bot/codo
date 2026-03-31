@@ -12,7 +12,7 @@ export function buildSystemPrompt(): string {
   const env = getEnvInfo()
   const memory = loadMemory()
 
-  return `You are codo, an interactive CLI agent for software engineering tasks.
+  return `You are edgecli, an interactive CLI agent for software engineering tasks.
 
 # CRITICAL RULES
 

@@ -1,10 +1,10 @@
 {
-  "name": "codo",
+  "name": "edgecli",
   "version": "0.1.0",
-  "description": "🦞 codo - AI coding assistant. CC-inspired, model-agnostic.",
+  "description": "🦞 edgecli - AI coding assistant. CC-inspired, model-agnostic.",
   "main": "dist/index.js",
   "bin": {
-    "codo": "dist/index.js"
+    "edgecli": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",

@@ -1,4 +1,4 @@
-# 🦞 codo
+# 🦞 edgecli
 
 AI coding assistant for the terminal. Architecture from Claude Code. Model-agnostic by design.
 
@@ -36,19 +36,19 @@ npx tsx src/index.tsx "your prompt"
 
 ```bash
 # Interactive TUI
-codo
+edgecli
 
 # One-shot
-codo "explain this codebase"
+edgecli "explain this codebase"
 
 # Print mode (for scripts)
-codo --print "list all Python files"
+edgecli --print "list all Python files"
 
 # Specific model
-codo -m "anthropic/claude-sonnet-4" "refactor auth module"
+edgecli -m "anthropic/claude-sonnet-4" "refactor auth module"
 
 # Show config
-codo --config
+edgecli --config
 ```
 
 ## Environment

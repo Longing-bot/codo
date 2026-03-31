@@ -82,7 +82,7 @@ export async function ensureConfig(): Promise<CodoConfig> {
 
   const rl = createInterface({ input: process.stdin, output: process.stdout })
 
-  console.log('\n🦞 欢迎使用 codo！还没有配置 API。\n')
+  console.log('\n🦞 欢迎使用 edgecli！还没有配置 API。\n')
 
   // 选择提供商
   const providerNames = PROVIDERS.map(p => p.name)
@@ -127,7 +127,7 @@ export async function ensureConfig(): Promise<CodoConfig> {
   console.log(`  API 地址: ${config.baseUrl}`)
   console.log(`  模型:     ${config.model}`)
   console.log(`  密钥:     ${config.apiKey.slice(0, 8)}...`)
-  console.log('\n  直接运行 codo 即可使用。codo --setup 可重新配置。\n')
+  console.log('\n  直接运行 edgecli 即可使用。edgecli --setup 可重新配置。\n')
 
   rl.close()
   return config

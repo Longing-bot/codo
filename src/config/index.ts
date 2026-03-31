@@ -29,10 +29,10 @@ export interface ToolCall {
   function: { name: string; arguments: string }
 }
 
-const DIR = join(homedir(), '.codo')
+const DIR = join(homedir(), '.edgecli')
 const CONFIG_FILE = join(DIR, 'config.json')
 const HISTORY_DIR = join(DIR, 'history')
-const MEMORY_FILES = ['CLAUDE.md', 'AGENTS.md', '.codo.md', 'OpenCode.md']
+const MEMORY_FILES = ['CLAUDE.md', 'AGENTS.md', '.edgecli.md', 'OpenCode.md']
 
 const DEFAULT: CodoConfig = {
   apiKey: '', baseUrl: 'https://api.longcat.chat/anthropic',
