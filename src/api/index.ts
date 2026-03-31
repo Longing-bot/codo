@@ -125,12 +125,17 @@ async function callAnthropic(
     tools,
   }
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const baseUrl = config.baseUrl.replace(/\/$/, '')
+  const isLongCat = baseUrl.includes('longcat')
+  const authHeaders: Record<string, string> = isLongCat
+    ? { 'Authorization': `Bearer ${apiKey}` }
+    : { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+
+  const res = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+      ...authHeaders,
     },
     body: JSON.stringify(payload),
   })
