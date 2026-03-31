@@ -1,91 +1,42 @@
 // ─── Entry Point ──────────────────────────────────────────────────────────
-
 import React from 'react'
 import { render } from 'ink'
 import { App } from './ui/App.js'
-import { loadConfig, saveConfig, getApiKey, hasApiKey } from './config/index.js'
+import { loadConfig, saveConfig, hasApiKey, detectProvider } from './config/index.js'
 import { runQuery } from './query/index.js'
 
 const args = process.argv.slice(2)
 
 if (args.includes('--help')) {
-  console.log(`
-\u{1F99E} codo - AI coding assistant (CC-inspired, model-agnostic)
+  console.log(`🦞 codo - AI coding assistant (CC architecture, model-agnostic)
 
-Usage:
-  codo [prompt]           One-shot mode
-  codo                    Interactive mode (TUI)
-  codo --print [prompt]   Print mode (no TUI, for scripting)
-  codo --config           Show configuration
-  codo --help             Show this help
-
-Options:
-  -m, --model MODEL       Override model for this session
-  --provider PROVIDER     Force provider (openai|anthropic|openrouter)
-
-Environment:
-  OPENROUTER_API_KEY      API key for OpenRouter
-  OPENAI_API_KEY          API key for OpenAI
-  ANTHROPIC_API_KEY       API key for Anthropic
-`)
+Usage: codo [prompt] | codo --print [prompt] | codo --config | codo --help
+Options: -m/--model MODEL | --provider openai|anthropic|openrouter
+Env: OPENROUTER_API_KEY | OPENAI_API_KEY | ANTHROPIC_API_KEY`)
   process.exit(0)
 }
 
 if (args.includes('--config')) {
-  const config = loadConfig()
-  console.log('\u{1F99E} codo configuration\n')
-  console.log(`  API Key: ${config.apiKey ? config.apiKey.slice(0, 8) + '...' : '(not set in config)'}`)
-  console.log(`  Base URL: ${config.baseUrl}`)
-  console.log(`  Model: ${config.model}`)
-  console.log(`  Provider: ${detectProvider(config)}`)
-  console.log(`  Key available: ${hasApiKey(config) ? '\u2705' : '\u274C NOT SET'}`)
-  console.log('\nSet env var or edit ~/.codo/config.json')
+  const c = loadConfig()
+  console.log(`🦞 codo config\n  Key: ${c.apiKey ? c.apiKey.slice(0, 8) + '...' : '(not set)'}\n  URL: ${c.baseUrl}\n  Model: ${c.model}\n  Provider: ${detectProvider(c)}\n  Available: ${hasApiKey(c) ? '✅' : '❌'}`)
   process.exit(0)
 }
 
-// Parse args
-let initialPrompt: string | undefined
-const modelIdx = args.indexOf('-m') !== -1 ? args.indexOf('-m') : args.indexOf('--model')
-if (modelIdx !== -1 && args[modelIdx + 1]) {
-  const config = loadConfig()
-  config.model = args[modelIdx + 1]
-  saveConfig(config)
-}
+const mi = args.indexOf('-m') !== -1 ? args.indexOf('-m') : args.indexOf('--model')
+if (mi !== -1 && args[mi + 1]) { const c = loadConfig(); c.model = args[mi + 1]; saveConfig(c) }
+const prompt = args.filter(a => !a.startsWith('-') && a !== args[mi + 1]).join(' ') || undefined
 
-const nonFlagArgs = args.filter(a => !a.startsWith('-') && a !== args[modelIdx + 1])
-if (nonFlagArgs.length > 0) initialPrompt = nonFlagArgs.join(' ')
-
-const isTTY = process.stdin.isTTY && process.stdout.isTTY
-
-if (isTTY && !args.includes('--print')) {
-  render(React.createElement(App, { initialPrompt }))
+if (process.stdin.isTTY && process.stdout.isTTY && !args.includes('--print')) {
+  render(React.createElement(App, { initialPrompt: prompt }))
 } else {
-  // Print mode
   const config = loadConfig()
-  if (!initialPrompt) {
-    console.log('\u{1F99E} codo (non-interactive). Use --help for options.')
-    process.exit(0)
-  }
-  console.log(`\u{1F99E} codo [${config.model}]\n`)
-  try {
-    await runQuery(initialPrompt, config, [], {
-      onText: (text) => console.log(`\n${text}`),
-      onToolStart: (name, args) => {
-        const short = args.length > 50 ? args.slice(0, 50) + '...' : args
-        console.log(`\n\u{1F527} ${name}(${short})`)
-      },
-      onToolResult: (_name, result) => {
-        console.log(`   ${result.content.split('\n')[0].slice(0, 80)}`)
-      },
-      onTurn: (turn) => { if (turn > 1) process.stdout.write(`\r\u23F3 turn ${turn}`) },
-      onError: (err) => console.error(`\u274C ${err}`),
-    })
-  } catch (ex: any) { console.error(`\n\u274C ${ex.message}`); process.exit(1) }
-}
-
-function detectProvider(config: any): string {
-  if (config.provider) return config.provider
-  const url = config.baseUrl || ''
-  if (url.includes('anthropic') || url.includes('longcat')) return 'anthropic'
-  return 'openrouter'
+  if (!prompt) { console.log('🦞 codo (non-interactive). Use --help.'); process.exit(0) }
+  console.log(`🦞 codo [${config.model}]\n`)
+  await runQuery(prompt, config, [], {
+    onText: t => console.log(`\n${t}`),
+    onToolStart: (n, a) => console.log(`\n🔧 ${n}(${a.length > 40 ? a.slice(0, 40) + '...' : a})`),
+    onToolResult: (_, r) => console.log(`   ${r.content.split('\n')[0].slice(0, 60)}`),
+    onTurn: t => { if (t > 1) process.stdout.write(`\r⏳ turn ${t}`) },
+    onError: e => console.error(`❌ ${e}`),
+  })
 }

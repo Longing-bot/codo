@@ -1,7 +1,8 @@
-// ─── Layer 6: Config & Memory ──────────────────────────────────────────────
+// ─── Layer 6: Config, Memory, Environment ──────────────────────────────────
+// CC pattern: environment info auto-injected, memory files loaded, session persisted
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { homedir } from 'os'
 import { createHash } from 'crypto'
 import { execSync } from 'child_process'
@@ -13,7 +14,6 @@ export interface CodoConfig {
   maxTokens: number
   provider: 'openai' | 'anthropic' | 'openrouter'
   autoApprove: boolean
-  theme: 'dark' | 'light'
 }
 
 export interface Message {
@@ -29,110 +29,93 @@ export interface ToolCall {
   function: { name: string; arguments: string }
 }
 
-const CONFIG_DIR = join(homedir(), '.codo')
-const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
-const HISTORY_DIR = join(CONFIG_DIR, 'history')
+const DIR = join(homedir(), '.codo')
+const CONFIG_FILE = join(DIR, 'config.json')
+const HISTORY_DIR = join(DIR, 'history')
 const MEMORY_FILES = ['CLAUDE.md', 'AGENTS.md', '.codo.md', 'OpenCode.md']
 
-const DEFAULT_CONFIG: CodoConfig = {
-  apiKey: '',
-  baseUrl: 'https://api.longcat.chat/anthropic',
-  model: 'LongCat-Flash-Thinking-2601',
-  maxTokens: 8192,
-  provider: 'anthropic',
-  autoApprove: false,
-  theme: 'dark',
+const DEFAULT: CodoConfig = {
+  apiKey: '', baseUrl: 'https://api.longcat.chat/anthropic',
+  model: 'LongCat-Flash-Thinking-2601', maxTokens: 8192,
+  provider: 'anthropic', autoApprove: false,
 }
 
-// ─── Config ────────────────────────────────────────────────────────────
 export function loadConfig(): CodoConfig {
-  mkdirSync(CONFIG_DIR, { recursive: true })
+  mkdirSync(DIR, { recursive: true })
   if (existsSync(CONFIG_FILE)) {
-    try { return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) } } catch {}
+    try {
+      const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'))
+      return { ...DEFAULT, ...raw }
+    } catch (_e) {
+      // ignore parse errors
+    }
   }
-  return { ...DEFAULT_CONFIG }
+  return { ...DEFAULT }
+}
+export function saveConfig(c: CodoConfig) { mkdirSync(DIR, { recursive: true }); writeFileSync(CONFIG_FILE, JSON.stringify(c, null, 2)) }
+export function getApiKey(c: CodoConfig): string {
+  return c.apiKey || process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || ''
+}
+export function hasApiKey(c: CodoConfig): boolean {
+  return !!(c.apiKey || process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY)
+}
+export function detectProvider(c: CodoConfig): string {
+  if (c.provider) return c.provider
+  if (c.baseUrl.includes('anthropic') || c.baseUrl.includes('longcat')) return 'anthropic'
+  return 'openrouter'
 }
 
-export function saveConfig(config: CodoConfig): void {
-  mkdirSync(CONFIG_DIR, { recursive: true })
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2))
-}
-
-export function getApiKey(config: CodoConfig): string {
-  return config.apiKey || process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || ''
-}
-
-export function hasApiKey(config: CodoConfig): boolean {
-  return !!(config.apiKey || process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY)
-}
-
-// ─── Environment Info (CC-style) ───────────────────────────────────────
-export function getEnvironmentInfo(): string {
+// ─── Environment (CC pattern) ─────────────────────────────────────────
+export function getEnvInfo(): string {
   const cwd = process.cwd()
-  let gitBranch = '', gitStatus = '', gitLog = ''
-  try { gitBranch = execSync('git branch --show-current', { encoding: 'utf-8', timeout: 3000 }).trim() } catch {}
-  try { gitStatus = execSync('git status --short', { encoding: 'utf-8', timeout: 3000 }).trim().slice(0, 300) } catch {}
-  try { gitLog = execSync('git log --oneline -5', { encoding: 'utf-8', timeout: 3000 }).trim() } catch {}
-
-  let fileTree = ''
+  let branch = '', status = '', log = ''
+  try { branch = execSync('git branch --show-current', { encoding: 'utf-8', timeout: 3000 }).trim() } catch (_e) {}
+  try { status = execSync('git status --short', { encoding: 'utf-8', timeout: 3000 }).trim().slice(0, 300) } catch (_e) {}
+  try { log = execSync('git log --oneline -5', { encoding: 'utf-8', timeout: 3000 }).trim() } catch (_e) {}
+  let tree = ''
   try {
-    const entries = readdirSync(cwd).filter(e => !e.startsWith('.git') && e !== 'node_modules').sort().slice(0, 50)
-    fileTree = entries.map(e => {
-      const isDir = statSync(join(cwd, e)).isDirectory()
-      return `${isDir ? '📁' : '📄'} ${e}${isDir ? '/' : ''}`
-    }).join('\n')
-  } catch { fileTree = '(cannot list)' }
+    tree = readdirSync(cwd).filter(e => e !== '.git' && e !== 'node_modules').sort().slice(0, 40)
+      .map(e => { try { return statSync(join(cwd, e)).isDirectory() ? '{1F4C1} ' + e : '{1F4C4} ' + e } catch(_e) { return '' } })
+      .filter(Boolean).join('\n')
+  } catch (_e) {}
 
   return `<environment>
 Working directory: ${cwd}
 Platform: ${process.platform}
 Node: ${process.version}
 Date: ${new Date().toISOString().split('T')[0]}
-Git branch: ${gitBranch || 'not a git repo'}
+Git branch: ${branch || 'not a git repo'}
+Git status: ${status || 'clean or not a git repo'}
+Last commits:
+${log || 'none'}
 </environment>
 
-<git_status>
-${gitStatus || 'clean or not a git repo'}
-</git_status>
-
-<git_log>
-${gitLog || 'no commits'}
-</git_log>
-
 <project_files>
-${fileTree}
+${tree}
 </project_files>`
 }
 
-// ─── Memory Files ──────────────────────────────────────────────────────
+// ─── Memory (CC pattern: auto-load CLAUDE.md etc.) ────────────────────
 export function loadMemory(): string {
   const cwd = process.cwd()
   const parts: string[] = []
   for (const name of MEMORY_FILES) {
     const p = join(cwd, name)
     if (existsSync(p) && statSync(p).size < 10000) {
-      try {
-        const content = readFileSync(p, 'utf-8')
-        parts.push(`<memory_file path="${name}">\n${content}\n</memory_file>`)
-      } catch {}
+      try { parts.push(`<memory_file path="${name}">\n${readFileSync(p, 'utf-8')}\n</memory_file>`) } catch (_e) {}
     }
   }
   return parts.join('\n\n')
 }
 
-// ─── Session History ───────────────────────────────────────────────────
+// ─── Session ───────────────────────────────────────────────────────────
 export function getSessionFile(): string {
   mkdirSync(HISTORY_DIR, { recursive: true })
-  const hash = createHash('md5').update(process.cwd()).digest('hex').slice(0, 12)
-  return join(HISTORY_DIR, `${hash}.json`)
+  return join(HISTORY_DIR, createHash('md5').update(process.cwd()).digest('hex').slice(0, 12) + '.json')
 }
-
 export function loadSession(): Message[] {
-  const file = getSessionFile()
-  if (existsSync(file)) { try { return JSON.parse(readFileSync(file, 'utf-8')) } catch {} }
+  const f = getSessionFile()
+  if (existsSync(f)) { try { return JSON.parse(readFileSync(f, "utf-8")) } catch(_e) {} }
   return []
 }
-
-export function saveSession(messages: Message[]): void {
-  writeFileSync(getSessionFile(), JSON.stringify(messages.slice(-40), null, 2))
-}
+export function saveSession(msgs: Message[]) { writeFileSync(getSessionFile(), JSON.stringify(msgs.slice(-40), null, 2)) }
