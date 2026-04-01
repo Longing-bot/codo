@@ -5,6 +5,10 @@ import { getCompactionRequest } from '../memory/compact.js'
 import { getExecPolicy, setExecPolicy } from '../hooks/policy.js'
 import { consolidateMemory, recordSession, shouldConsolidate } from '../memory/dream.js'
 import { getPermissionLevel, setPermissionLevel, listPermissions, PERMISSION_NAMES, PermissionLevel } from '../permissions/index.js'
+import { estimateMessageTokens, getContextStats } from '../memory/index.js'
+import { collectContext, formatContextForPrompt } from '../context/index.js'
+import { getChangedFiles, getFileDiff, revertFile, getTrackerStats, clearTracker } from '../tracker/index.js'
+import { getApprovalMode, setApprovalMode } from '../approval/index.js'
 
 export interface Command {
   name: string
@@ -35,19 +39,34 @@ const help: Command = {
     type: 'info',
     content: `edgecli 命令
 
-  /help (?/ h/)      显示帮助
-  /clear             清除对话历史
-  /compact           压缩上下文，保留摘要
-  /history           查看消息统计
-  /config            查看当前配置
-  /usage (cost/)     查看 token 用量和花费
-  /model             切换/查看模型
-  /think             切换深度思考模式
-  /policy            查看/切换权限模式和执行策略
-  /agent             运行子代理执行任务
-  /dream             整理记忆（自动整理）
-  /resume            恢复上次对话
-  /quit (q/ exit/)   退出`,
+  对话
+    /help (?/ h/)      显示帮助
+    /clear             清除对话历史
+    /compact           压缩上下文，保留摘要
+    /history           查看消息统计
+    /resume            恢复上次对话
+
+  模型
+    /model <name>      切换/查看模型
+    /think             切换深度思考模式
+
+  配置
+    /config            查看当前配置
+    /policy <mode>     切换权限模式
+    /approval <mode>   切换审批模式 (always-ask|auto-approve-safe|full-auto)
+
+  文件
+    /diff              查看本次会话的文件变更
+    /revert <file>     回退文件到修改前的状态
+
+  信息
+    /context           显示当前上下文使用情况
+    /usage (cost/)     查看 token 用量和花费
+
+  其他
+    /agent <task>      运行子代理
+    /dream             整理记忆
+    /quit (q/ exit/)   退出`,
   }),
 }
 
@@ -60,11 +79,12 @@ const clear: Command = {
     const f = getSessionFile()
     if (existsSync(f)) unlinkSync(f)
     ctx.clearMessages()
-    return { type: 'action', content: '🗑️ 对话已清除。', clearHistory: true }
+    clearTracker()
+    return { type: 'action', content: '🗑️ 对话和变更记录已清除。', clearHistory: true }
   },
 }
 
-// ─── /compact（CC 风格：压缩上下文）─────────────────────────────────────
+// ─── /compact ──────────────────────────────────────────────────────────
 const compact: Command = {
   name: 'compact',
   description: '压缩上下文，保留摘要继续工作',
@@ -108,12 +128,13 @@ const config: Command = {
   格式: ${c.provider || 'auto'}
   地址: ${c.baseUrl}
   模型: ${c.model}
+  审批: ${getApprovalMode()}
   密钥: ${c.apiKey ? c.apiKey.slice(0, 8) + '...' : '(未设置)'}`,
     }
   },
 }
 
-// ─── /model（CC 风格：切换模型）─────────────────────────────────────────
+// ─── /model ────────────────────────────────────────────────────────────
 const model: Command = {
   name: 'model',
   description: '切换模型',
@@ -131,7 +152,7 @@ const model: Command = {
   },
 }
 
-// ─── /think（CC 风格：切换思考模式）─────────────────────────────────────
+// ─── /think ────────────────────────────────────────────────────────────
 const think: Command = {
   name: 'think',
   description: '切换深度思考模式',
@@ -156,7 +177,7 @@ const usage: Command = {
   },
 }
 
-// ─── /policy（权限模式 + 执行策略）────────────────────────────────────
+// ─── /policy ──────────────────────────────────────────────────────────
 const policy: Command = {
   name: 'policy',
   description: '查看/切换权限模式或执行策略',
@@ -168,14 +189,12 @@ const policy: Command = {
       const execPolicy = getExecPolicy()
       return {
         type: 'info',
-        content: `权限模式: ${PERMISSION_NAMES[permLevel]}\n执行策略: ${execPolicy}\n\n${listPermissions()}\n\n用法:\n  /policy ReadOnly|WorkspaceWrite|DangerFullAccess|Prompt|Allow\n  /policy unless-trusted|on-failure|on-request|never`,
+        content: `权限模式: ${PERMISSION_NAMES[permLevel]}\n执行策略: ${execPolicy}\n审批模式: ${getApprovalMode()}\n\n${listPermissions()}\n\n用法:\n  /policy ReadOnly|WorkspaceWrite|DangerFullAccess|Prompt|Allow\n  /policy unless-trusted|on-failure|on-request|never`,
       }
     }
-    // 先尝试权限等级
     if (setPermissionLevel(args)) {
       return { type: 'action', content: `✅ 权限模式已切换到: ${args}` }
     }
-    // 再尝试执行策略
     const validPolicies = ['unless-trusted', 'on-failure', 'on-request', 'never']
     if (validPolicies.includes(args)) {
       setExecPolicy(args as any)
@@ -185,7 +204,26 @@ const policy: Command = {
   },
 }
 
-// ─── /agent（OpenClaw 风格：子代理）─────────────────────────────────────
+// ─── /approval（新命令）────────────────────────────────────────────────
+const approval: Command = {
+  name: 'approval',
+  description: '切换审批模式',
+  aliases: [],
+  argumentHint: '<always-ask|auto-approve-safe|full-auto>',
+  execute: (args) => {
+    if (!args) {
+      return { type: 'info', content: `当前审批模式: ${getApprovalMode()}\n\n可选:\n  always-ask       所有工具都需要确认\n  auto-approve-safe 安全工具自动执行，危险操作需要确认\n  full-auto        所有工具自动执行\n\n用法: /approval <mode>` }
+    }
+    const validModes = ['always-ask', 'auto-approve-safe', 'full-auto']
+    if (!validModes.includes(args)) {
+      return { type: 'error', content: `无效模式。可选: ${validModes.join(', ')}` }
+    }
+    setApprovalMode(args as any)
+    return { type: 'action', content: `✅ 审批模式已切换到: ${args}` }
+  },
+}
+
+// ─── /agent ────────────────────────────────────────────────────────────
 const agent: Command = {
   name: 'agent',
   description: '运行子代理执行任务',
@@ -199,7 +237,7 @@ const agent: Command = {
   },
 }
 
-// ─── /dream（CC 风格：后台记忆整理）─────────────────────────────────────
+// ─── /dream ────────────────────────────────────────────────────────────
 const dream: Command = {
   name: 'dream',
   description: '整理记忆',
@@ -210,7 +248,7 @@ const dream: Command = {
   },
 }
 
-// ─── /resume（CC 风格：恢复上次对话）─────────────────────────────────────
+// ─── /resume ───────────────────────────────────────────────────────────
 const resume: Command = {
   name: 'resume',
   description: '恢复上次对话',
@@ -229,6 +267,99 @@ const resume: Command = {
   },
 }
 
+// ─── /diff（新命令）───────────────────────────────────────────────────
+const diffCmd: Command = {
+  name: 'diff',
+  description: '查看本次会话的文件变更',
+  aliases: [],
+  execute: () => {
+    const changes = getChangedFiles()
+    if (changes.length === 0) {
+      return { type: 'info', content: '本次会话没有文件变更。' }
+    }
+
+    const lines: string[] = ['📝 本次会话文件变更:\n']
+    for (const change of changes) {
+      const summary = `${change.addedLines > 0 ? '+' + change.addedLines : ''}${change.removedLines > 0 ? '-' + change.removedLines : ''} lines`
+      lines.push(`  ${change.path}`)
+      lines.push(`    ${change.toolName}: ${summary}`)
+
+      // 显示 diff（最多 20 行）
+      const diff = getFileDiff(change.path)
+      const diffLines = diff.split('\n').slice(0, 20)
+      for (const dl of diffLines) {
+        if (dl.startsWith('+')) lines.push(`    ${dl}`)
+        else if (dl.startsWith('-')) lines.push(`    ${dl}`)
+        else if (dl.startsWith('@@')) lines.push(`    ${dl}`)
+      }
+      if (diff.split('\n').length > 20) {
+        lines.push(`    ... (${diff.split('\n').length - 20} 行更多)`)
+      }
+      lines.push('')
+    }
+
+    const stats = getTrackerStats()
+    lines.push(`总计: ${stats}`)
+
+    return { type: 'info', content: lines.join('\n') }
+  },
+}
+
+// ─── /revert（新命令）─────────────────────────────────────────────────
+const revertCmd: Command = {
+  name: 'revert',
+  description: '回退文件到修改前的状态',
+  aliases: [],
+  argumentHint: '<file_path>',
+  execute: (args) => {
+    if (!args) {
+      const changes = getChangedFiles()
+      if (changes.length === 0) {
+        return { type: 'info', content: '没有可回退的文件。用法: /revert <file_path>' }
+      }
+      const fileList = changes.map(c => `  ${c.path} (${c.toolName})`).join('\n')
+      return { type: 'info', content: `可回退的文件:\n${fileList}\n\n用法: /revert <file_path>` }
+    }
+    const result = revertFile(args)
+    return { type: result.success ? 'action' : 'error', content: result.message }
+  },
+}
+
+// ─── /context（新命令）────────────────────────────────────────────────
+const contextCmd: Command = {
+  name: 'context',
+  description: '显示当前上下文使用情况',
+  aliases: [],
+  execute: (_, ctx) => {
+    const ctxInfo = collectContext()
+    const tokenStats = getContextStats(ctx.messages)
+    const trackerStats = getTrackerStats()
+
+    const lines = [
+      `📊 上下文信息:`,
+      ``,
+      `对话: ${tokenStats}`,
+      `文件变更: ${trackerStats}`,
+      ``,
+      `Git 分支: ${ctxInfo.gitBranch || '(not a git repo)'}`,
+      `目录: ${ctxInfo.cwd}`,
+      `文件数: ${ctxInfo.directoryTree.length}`,
+    ]
+
+    if (ctxInfo.modifiedFiles.length > 0) {
+      lines.push(``, `修改的文件:`)
+      ctxInfo.modifiedFiles.slice(0, 10).forEach(f => lines.push(`  ${f}`))
+    }
+
+    if (ctxInfo.recentCommits.length > 0) {
+      lines.push(``, `最近提交:`)
+      ctxInfo.recentCommits.forEach(c => lines.push(`  ${c}`))
+    }
+
+    return { type: 'info', content: lines.join('\n') }
+  },
+}
+
 // ─── /quit ─────────────────────────────────────────────────────────────
 const quit: Command = {
   name: 'quit',
@@ -238,7 +369,10 @@ const quit: Command = {
 }
 
 // ─── 注册表 ────────────────────────────────────────────────────────────
-const COMMANDS: Command[] = [help, clear, compact, history, config, usage, model, think, policy, agent, dream, resume, quit]
+const COMMANDS: Command[] = [
+  help, clear, compact, history, config, usage, model, think, policy, approval,
+  agent, dream, resume, diffCmd, revertCmd, contextCmd, quit,
+]
 
 export function processCommand(input: string, context: CommandContext): CommandResult | Promise<CommandResult> | null {
   if (!input.startsWith('/')) return null

@@ -1,22 +1,13 @@
 // ─── System Prompt (CC Architecture) ───────────────────────────────────────
-// Directly inspired by Claude Code's prompt design patterns:
-// 1. Anti-patterns > positive instructions
-// 2. Role-specific tool constraints
-// 3. Anti-hallucination rules
-// 4. Environment auto-injection
-// 5. Memory file injection
-
-import { getEnvInfo, loadMemory } from '../config/index.js'
 import { loadMemoryFiles } from '../memory/filesystem.js'
 import { loadAllSkills, buildSkillsPrompt } from '../skills/index.js'
 
 export function buildSystemPrompt(): string {
-  const env = getEnvInfo()
-  const memory = loadMemory()
+  const memory = loadMemoryFiles()
 
   return `You are edgecli, an interactive CLI agent for software engineering tasks.
 
-${loadMemoryFiles() ? `# Memory Files\n${loadMemoryFiles()}\n` : ''}
+${loadMemoryFiles() ? `# Memory Files\n${memory}\n` : ''}
 ${buildSkillsPrompt(loadAllSkills(['skills', '.edgecli/skills']))}
 # CRITICAL RULES
 
@@ -112,7 +103,5 @@ ${buildSkillsPrompt(loadAllSkills(['skills', '.edgecli/skills']))}
 - Don't modify files outside the project directory
 - Measure twice, cut once for irreversible operations
 
-${env}
-
-${memory ? `<project_memory>\n${memory}\n</project_memory>` : ''}`
+</environment>`
 }
