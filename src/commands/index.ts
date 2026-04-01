@@ -2,6 +2,7 @@
 import { existsSync, unlinkSync, readFileSync, writeFileSync } from 'fs'
 import { getSessionFile, saveSession, loadSession, loadConfig, saveConfig, type Message } from '../config/index.js'
 import { getCompactionRequest } from '../memory/compact.js'
+import { getExecPolicy, setExecPolicy } from '../hooks/policy.js'
 
 export interface Command {
   name: string
@@ -153,16 +154,25 @@ const resume: Command = {
   },
 }
 
-// ─── /quit ─────────────────────────────────────────────────────────────
-const quit: Command = {
-  name: 'quit',
-  description: '退出',
-  aliases: ['q', 'exit'],
-  execute: () => { process.exit(0); return { type: 'info', content: '' } },
+// ─── /policy（Codex 风格：执行策略）─────────────────────────────────────
+const policy: Command = {
+  name: 'policy',
+  description: '查看/切换执行策略',
+  aliases: [],
+  argumentHint: '<unless-trusted|on-failure|on-request|never>',
+  execute: (args) => {
+    if (!args) {
+      return { type: 'info', content: `当前执行策略: ${getExecPolicy()}\n\n策略说明:\n  unless-trusted  信任命令自动执行，其他需要审批（默认）\n  on-failure      失败时才需要审批\n  on-request      每次都需要审批\n  never           从不审批\n\n用法: /policy <策略名称>` }
+    }
+    const valid = ['unless-trusted', 'on-failure', 'on-request', 'never']
+    if (!valid.includes(args)) {
+      return { type: 'error', content: `无效策略。可选: ${valid.join(', ')}` }
+    }
+    setExecPolicy(args as any)
+    return { type: 'action', content: `✅ 执行策略已切换到: ${args}` }
+  },
 }
 
-// ─── 注册表 ────────────────────────────────────────────────────────────
-const COMMANDS: Command[] = [help, clear, compact, history, config, model, think, resume, quit]
 
 export function processCommand(input: string, context: CommandContext): CommandResult | Promise<CommandResult> | null {
   if (!input.startsWith('/')) return null

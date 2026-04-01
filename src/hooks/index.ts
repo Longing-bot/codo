@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 import type { ToolResult } from '../tools/index.js'
+import { evaluateExecution } from './policy.js'
 
 // ─── Hook 类型 ──────────────────────────────────────────────────────────
 export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
@@ -42,6 +43,14 @@ export async function executePreToolHooks(
     hook_event_name: 'PreToolUse',
     tool_name: toolName,
     tool_input: toolInput,
+  }
+
+  // 内置 hook：bash 执行策略（Codex AskForApproval 风格）
+  if (toolName === 'bash') {
+    const policy = evaluateExecution(toolInput.command)
+    if (!policy.allowed) {
+      return { allowed: false, reason: `🚫 ${policy.reason}: ${toolInput.command}` }
+    }
   }
 
   // 内置 hook：文件验证

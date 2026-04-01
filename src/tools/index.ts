@@ -14,10 +14,16 @@ function err(s: string): ToolResult { return { content: s, isError: true } }
 
 // ─── Banned / Safe ────────────────────────────────────────────────────
 const BANNED = ['rm -rf /', 'rm -rf /*', 'mkfs', ':(){', 'chmod 777 /', '> /dev/sd', 'dd if=/dev/']
-const SAFE = ['ls','cat','head','tail','pwd','date','whoami','id','env','echo','which','test','true','false',
+
+// OpenCode 风格：文件操作命令应该用专用工具
+const FILE_OPS = new Set(['rm', 'cp', 'mv', 'mkdir', 'touch', 'chmod', 'chown', 'cat', 'head', 'tail', 'sed', 'awk', 'grep', 'find'])
+
+const SAFE = ['ls','pwd','date','whoami','id','env','echo','which','test','true','false',
   'git status','git log','git diff','git show','git branch','git tag','git remote','git ls-files','git blame','git grep','git shortlog',
-  'find','wc','sort','uniq','awk','sed -n','grep -n','file','stat','du','df','uname','hostname',
+  'wc','sort','uniq','file','stat','du','df','uname','hostname',
   'node --version','npm --version','npx','python --version','python3 --version','go version','rustc --version','cargo --version',
+  'pip list','pip show','npm list','npm outdated','yarn','pnpm','docker ps','docker images','docker logs',
+  'curl -s','wget -q','ssh -V','scp','rsync --dry','ps aux','top -l','kill -l','lsof','netstat','ss','ip addr',
   'python3 -c','python -c','pytest','jest','vitest','make','cmake']
 
 // ─── Tools ─────────────────────────────────────────────────────────────
@@ -57,7 +63,13 @@ export const writeFileTool: ToolDef = {
 
 export const editFileTool: ToolDef = {
   name: 'edit_file',
-  description: 'Edit file by replacing exact old_string with new_string. For MODIFYING existing files. Include enough context for uniqueness.',
+  description: `Edit file by replacing exact old_string with new_string. For MODIFYING existing files.
+
+OpenCode 风格注意事项：
+- 包含足够上下文确保唯一匹配
+- 如果找到多处匹配，需要更多上下文
+- 缩进必须完全一致
+- 先读取文件再编辑（Read before Edit）`,
   parameters: { type: 'object', properties: { file_path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } }, required: ['file_path', 'old_string', 'new_string'] },
   execute({ file_path, old_string, new_string }) {
     try {
@@ -75,10 +87,29 @@ export const editFileTool: ToolDef = {
 
 export const bashTool: ToolDef = {
   name: 'bash',
-  description: 'Execute shell command. Dangerous commands blocked. Non-readonly commands may need approval.',
+  description: `Execute shell command. Dangerous commands blocked.
+
+OpenCode 风格注意事项：
+- 文件操作请用专用工具（read_file/write_file/edit_file/glob/grep）
+- 不要用 cat/head/tail 读文件（用 read_file）
+- 不要用 find 搜索（用 glob）
+- 不要用 grep 搜索内容（用 grep 工具）
+- 支持 workdir 参数切换目录`,
   parameters: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'integer', default: 30 } }, required: ['command'] },
   execute({ command, timeout = 30 }) {
     for (const b of BANNED) if (command.includes(b)) return err(`🚫 Blocked: '${b}'`)
+    // OpenCode 风格：检测文件操作命令，建议用专用工具
+    const cmdName = command.trim().split(/\s+/)[0]
+    if (FILE_OPS.has(cmdName)) {
+      return ok(`⚠️ 建议使用专用工具代替 bash ${cmdName}：
+- 读文件: read_file
+- 写文件: write_file
+- 编辑: edit_file
+- 搜索文件: glob
+- 搜索内容: grep
+
+（命令仍可执行，但专用工具更安全、更精确）`)
+    }
     try {
       const out = execSync(command, { timeout: timeout * 1000, encoding: 'utf-8', maxBuffer: MAX, cwd: process.cwd() })
       return ok(out.length > MAX ? out.slice(0, MAX) + '\n...' : (out || '(no output)'))
