@@ -21,7 +21,7 @@ export const WelcomePanel: React.FC<Props> = ({ model, provider, cwd, onContinue
       <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
         {/* Header */}
         <Box justifyContent="center" marginBottom={1}>
-          <Text color="cyan" bold>🦞 edgecli v0.1.0</Text>
+          <Text color="cyan" bold>edgecli v0.1.0</Text>
         </Box>
 
         {/* Welcome */}
@@ -39,7 +39,7 @@ export const WelcomePanel: React.FC<Props> = ({ model, provider, cwd, onContinue
       {/* Tips card */}
       <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={2} paddingY={1} marginTop={1}>
         <Box marginBottom={1}>
-          <Text bold>💡 快速开始</Text>
+          <Text bold>快速开始</Text>
         </Box>
         <Box>
           <Text dimColor>  直接输入文字开始对话</Text>

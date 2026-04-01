@@ -146,7 +146,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
           setSpinnerStatus(toolStatus(n))
           // 检查危险命令
           if (n === 'bash' && isDangerousCommand(a)) {
-            add({ type: 'tool', content: `⚠️ ${n}(${a.length > 50 ? a.slice(0, 50) + '…' : a})`, toolName: n, toolArgs: a })
+            add({ type: 'tool', content: `[危险] ${n}(${a.length > 50 ? a.slice(0, 50) + '…' : a})`, toolName: n, toolArgs: a })
           } else {
             add({ type: 'tool', content: `${n}(${a.length > 50 ? a.slice(0, 50) + '…' : a})`, toolName: n, toolArgs: a })
           }
@@ -260,7 +260,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
           {/* User message */}
           {e.type === 'user' && (
             <Box>
-              <Text color="blue">● </Text>
+              <Text color="blue">{'>'} </Text>
               <Text bold>{e.content}</Text>
             </Box>
           )}
@@ -275,7 +275,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
           {/* Tool call */}
           {e.type === 'tool' && (
             <Box marginLeft={2}>
-              <Text color="blue">● </Text>
+              <Text color="blue">{'>'} </Text>
               <Text color="yellow">{e.content}</Text>
             </Box>
           )}
@@ -305,7 +305,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
           {/* Error */}
           {e.type === 'error' && (
             <Box marginLeft={2}>
-              <Text color="red">● </Text>
+              <Text color="red">{'>'} </Text>
               <Text color="red">{e.content}</Text>
             </Box>
           )}
@@ -318,7 +318,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
       {/* Permission dialog (CC style) */}
       {pendingTool && (
         <PermissionDialog
-          title="⚠️ 危险命令"
+          title="危险命令"
           subtitle="请确认是否执行"
           command={pendingTool.args}
           description="此命令可能造成不可逆操作"
@@ -331,7 +331,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
       {!running && !pendingTool && (
         <Box flexDirection="column" marginTop={1}>
           <Box borderColor="cyan" borderStyle="round" borderLeft={false} borderRight={false} borderBottom paddingLeft={1} paddingRight={1}>
-            <Text color="green" bold>❯ </Text>
+            <Text color="green" bold>{'> '}</Text>
             <TextInput
               value={input}
               onChange={setInput}

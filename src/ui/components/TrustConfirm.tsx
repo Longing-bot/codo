@@ -43,10 +43,10 @@ export const TrustConfirm: React.FC<Props> = ({ cwd, onAccept, onReject }) => {
       {/* Options */}
       <Box flexDirection="column" marginBottom={1}>
         <Text color={selected === 0 ? 'cyan' : 'gray'}>
-          {selected === 0 ? '❯ ' : '  '}1. 是，我信任此目录
+          {selected === 0 ? '> ' : '  '}1. 是，我信任此目录
         </Text>
         <Text color={selected === 1 ? 'cyan' : 'gray'}>
-          {selected === 1 ? '❯ ' : '  '}2. 否，退出
+          {selected === 1 ? '> ' : '  '}2. 否，退出
         </Text>
       </Box>
 
