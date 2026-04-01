@@ -136,9 +136,9 @@ async function callOpenAI(
     try {
       if (stream) {
         const response = await client.chat.completions.create({
-          model: config.model, messages, tools, max_tokens: config.maxTokens,
+          model: config.model, messages: messages as any, tools, max_tokens: config.maxTokens,
           stream: true,
-        } as any)
+        } as any) as any
 
         let content = ''
         const toolCallMap: Record<number, ToolCall> = {}
@@ -164,7 +164,7 @@ async function callOpenAI(
 
       // 非流式
       const resp = await client.chat.completions.create({
-        model: config.model, messages, tools, max_tokens: config.maxTokens,
+        model: config.model, messages: messages as any, tools, max_tokens: config.maxTokens,
       })
       const m = resp.choices?.[0]?.message ?? {}
       return { content: m.content ?? '', toolCalls: m.tool_calls?.map((tc: any) => ({

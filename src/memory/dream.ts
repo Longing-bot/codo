@@ -65,7 +65,7 @@ export async function consolidateMemory(): Promise<string> {
   if (existsSync(memoryDir)) {
     try {
       const files = readdirSync(memoryDir)
-        .filter(f => f.endsWith('.md'))
+        .filter((f: string) => f.endsWith('.md'))
         .sort()
         .slice(-7)  // 最近 7 天
 

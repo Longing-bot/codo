@@ -164,3 +164,6 @@ export const ALL_TOOLS = [readFileTool, writeFileTool, editFileTool, bashTool, g
 export function findTool(n: string) { return ALL_TOOLS.find(t => t.name === n) }
 export function toOpenAI() { return ALL_TOOLS.map(t => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.parameters } })) }
 export function toAnthropic() { return ALL_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: { type: 'object' as const, ...t.parameters } })) }
+
+// Alias for backward compatibility
+export type Tool = ToolDef

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { Box, Text, useInput } from 'ink'
 import TextInput from 'ink-text-input'
-import { loadConfig, saveConfig, type Message } from '../config/index.js'
+import { loadConfig, saveConfig, loadSession, type Message } from '../config/index.js'
 import { runQuery } from '../query/index.js'
 import { createREPLState } from '../repl/index.js'
 import { processCommand } from '../commands/index.js'
@@ -96,7 +96,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
   const submit = useCallback(async (text: string) => {
     if (!text.trim()) return
 
-    const cmd = processCommand(text.trim(), {
+    const cmd = await processCommand(text.trim(), {
       messages: msgs,
       clearMessages: () => setMsgs([]),
     })

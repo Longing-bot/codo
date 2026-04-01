@@ -49,7 +49,7 @@ const config = await ensureConfig()
 
 const mi = args.indexOf('-m') !== -1 ? args.indexOf('-m') : args.indexOf('--model')
 if (mi !== -1 && args[mi + 1]) { config.model = args[mi + 1]; saveConfig(config) }
-const prompt = args.filter(a => !a.startsWith('-') && a !== args[mi + 1]).join(' ') || undefined
+const prompt = args.filter((a: string) => !a.startsWith('-') && a !== args[mi + 1]).join(' ') || undefined
 
 if (process.stdin.isTTY && process.stdout.isTTY && !args.includes('--print')) {
   render(React.createElement(App, { initialPrompt: prompt }))
@@ -57,7 +57,7 @@ if (process.stdin.isTTY && process.stdout.isTTY && !args.includes('--print')) {
   if (!prompt) { console.log('edgecli（非交互模式）。用 edgecli --help 查看用法。'); process.exit(0) }
 
   const sessionMsgs = loadSession()
-  const cmdResult = processCommand(prompt, {
+  const cmdResult = await processCommand(prompt, {
     messages: sessionMsgs,
     clearMessages: () => {},
   })

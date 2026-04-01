@@ -74,8 +74,8 @@ export function getEnvInfo(): string {
   try { log = execSync('git log --oneline -5', { encoding: 'utf-8', timeout: 3000 }).trim() } catch (_e) {}
   let tree = ''
   try {
-    tree = readdirSync(cwd).filter(e => e !== '.git' && e !== 'node_modules').sort().slice(0, 40)
-      .map(e => { try { return statSync(join(cwd, e)).isDirectory() ? '{1F4C1} ' + e : '{1F4C4} ' + e } catch(_e) { return '' } })
+    tree = readdirSync(cwd).filter((e: string) => e !== '.git' && e !== 'node_modules').sort().slice(0, 40)
+      .map((e: string) => { try { return statSync(join(cwd, e)).isDirectory() ? '📁 ' + e : '📄 ' + e } catch(_e) { return '' } })
       .filter(Boolean).join('\n')
   } catch (_e) {}
 

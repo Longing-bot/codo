@@ -54,7 +54,7 @@ CC 风格使用说明：
     },
     required: ['todos'],
   },
-  execute: async (args) => {
+  execute: async (args: Record<string, any>) => {
     const oldTodos = [...todos]
     todos = args.todos || []
 

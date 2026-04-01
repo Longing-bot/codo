@@ -1,7 +1,7 @@
 // ─── Token 预算管理（CC tokenBudget 风格）───────────────────────────────────
 // CC 在 token 到达 90% 预算时发送"继续工作，不要总结"的消息
 
-import { estimateMessageTokens } from './index.js'
+import { type Message } from '../config/index.js'
 
 export interface BudgetTracker {
   continuationCount: number
@@ -37,8 +37,6 @@ export function checkBudget(tracker: BudgetTracker, messages: any[], budget: num
   return { action: 'continue' }
 }
 export { COMPACT_PROMPT, buildCompactedMessages, shouldCompact, getCompactionRequest } from './compact.js'
-
-import { type Message } from '../config/index.js'
 
 // Rough token estimation
 export function estimateTokens(text: string): number {

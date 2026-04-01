@@ -29,7 +29,7 @@ CC 风格使用说明：
     },
     required: ['query'],
   },
-  execute: async (args) => {
+  execute: async (args: Record<string, any>) => {
     try {
       const params = new URLSearchParams({
         q: args.query,

@@ -40,7 +40,7 @@ export async function runSubAgent(
   ]
 
   // 过滤工具（白名单/黑名单）
-  let allTools = detectProvider(config) === 'anthropic' ? toAnthropic() : toOpenAI()
+  let allTools: any[] = detectProvider(config) === 'anthropic' ? toAnthropic() : toOpenAI()
   if (allowedTools) {
     allTools = allTools.filter((t: any) => {
       const name = t.name || t.function?.name

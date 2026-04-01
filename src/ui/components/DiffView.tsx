@@ -1,7 +1,7 @@
 // ─── Diff 显示组件（CC StructuredDiff 风格）─────────────────────────────────
 import React from 'react'
 import { Box, Text } from 'ink'
-import { computeDiff, type DiffLine } from './diff.js'
+import { computeDiff, type DiffLine } from '../diff.js'
 
 interface DiffViewProps {
   oldText: string
@@ -16,7 +16,7 @@ export function DiffView({ oldText, newText, filePath, maxLines = 12 }: DiffView
 
   return (
     <Box flexDirection="column">
-      {displayed.map((line, i) => (
+      {displayed.map((line: DiffLine, i: number) => (
         <Box key={i}>
           {line.type === 'add' && (
             <>
