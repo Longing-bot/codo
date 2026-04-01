@@ -3,6 +3,18 @@ import { existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 import { loadMemoryFiles } from '../memory/filesystem.js'
 import { loadAllSkills, buildSkillsPrompt } from '../skills/index.js'
+import { getEditFormatPrompt, type EditFormat } from '../edit-format/index.js'
+
+// 全局编辑格式配置
+let currentEditFormat: EditFormat = 'whole'
+
+export function setCurrentEditFormat(format: EditFormat): void {
+  currentEditFormat = format
+}
+
+export function getCurrentEditFormat(): EditFormat {
+  return currentEditFormat
+}
 
 // ─── 项目类型检测 ────────────────────────────────────────────────────
 interface ProjectInfo {
@@ -318,6 +330,15 @@ ${buildSkillsPrompt(loadAllSkills(['skills', '.edgecli/skills']))}
 ${buildCodeStyleGuide()}
 
 ${buildGitCommitGuide()}
+
+${getEditFormatPrompt(currentEditFormat)}
+
+# Git Integration
+- After modifying files, they are automatically staged and committed with an AI-generated commit message
+- Commit messages follow conventional commits format (feat/fix/refactor/chore)
+- Use /git commands for manual git operations (/git status, /git diff, /git commit, /git branch, /git undo)
+- Use /symbols to search code symbols (functions, classes, methods)
+- Use /plan to view execution plans for complex multi-step tasks
 
 # SAFETY
 - Dangerous commands (rm -rf /, mkfs, etc.) are auto-blocked by the tool layer

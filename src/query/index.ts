@@ -6,6 +6,9 @@
 //   - 最大工具调用轮数限制（默认 25，可配置）
 //   - 工具并行调用支持
 //   - 错误恢复：失败信息反馈给 LLM
+//   - 自动 commit 工具修改的文件
+//   - 自动调试（失败时收集错误上下文反馈给 LLM）
+//   - 成本追踪
 
 import { CodoConfig, Message, detectProvider, getUsageTracker, type TokenUsage } from '../config/index.js'
 import { callLLM } from '../api/index.js'
@@ -21,6 +24,9 @@ import { snapshotBefore, recordChange, formatChangeSummary } from '../tracker/in
 import { needsApproval, handleApprovalDecision, type ApprovalDecision, type ApprovalRequest } from '../approval/index.js'
 import { saveSession as saveSessionDB, initWorkspaceSession } from '../storage/index.js'
 import { getMCPTools, initMCPServers } from '../mcp/index.js'
+import { autoCommit, trackAICommit, stageFile } from '../git/index.js'
+import { collectDebugContext, shouldAutoRetry, buildDebugFeedback, formatDebugSummary } from '../debug/index.js'
+import { recordCost, checkBudgetLimit, getDowngradedModel } from '../budget/index.js'
 
 // MCP 初始化标志
 let mcpInitialized = false
@@ -211,6 +217,7 @@ export async function runQuery(
     if (response.usage) {
       tracker.recordTurn(response.usage)
       onUsage?.(response.usage, config.model)
+      recordCost(response.usage, config.model, 'chat')
     }
 
     // 非流式时回调文本
@@ -333,19 +340,37 @@ export async function runQuery(
 
       // 文件变更追踪：操作前快照
       let beforeSnapshot = null
-      if (toolName === 'write_file' || toolName === 'edit_file') {
+      const isFileEdit = toolName === 'write_file' || toolName === 'edit_file' || toolName === 'patch_file'
+      if (isFileEdit) {
         beforeSnapshot = snapshotBefore(args.file_path)
       }
 
-      // 执行工具（带重试）
+      // 执行工具（带重试 + 自动调试）
       let result = await executeToolWithRetry(toolName, args, callbacks)
 
+      // 自动调试：失败时收集错误信息并反馈给 LLM
+      if (result.isError && toolName !== 'think' && toolName !== 'tool_search') {
+        const debugCtx = collectDebugContext(toolName, args, result, 0, 3)
+        if (debugCtx) {
+          const debugResult = shouldAutoRetry(debugCtx)
+          if (debugResult.shouldRetry) {
+            // 将调试上下文附加到结果中，让 LLM 看到
+            const feedback = buildDebugFeedback(debugCtx)
+            result = { ...result, content: result.content + '\n\n' + feedback }
+            onText?.(`\n${formatDebugSummary(debugCtx)}\n`)
+          }
+        }
+      }
+
       // 文件变更追踪：记录变更
-      if (toolName === 'write_file' || toolName === 'edit_file') {
+      if (isFileEdit) {
         const change = recordChange(args.file_path, toolName, beforeSnapshot)
         if (change && !result.isError) {
           const summary = formatChangeSummary(change)
           result = { ...result, content: result.content + ` [${summary}]` }
+
+          // 自动 stage 修改的文件
+          try { stageFile(args.file_path) } catch {}
         }
       }
 
@@ -359,9 +384,43 @@ export async function runQuery(
     // 等待所有工具完成
     const toolResults = await Promise.all(toolPromises)
 
+    // 自动 commit：如果有文件修改，自动提交
+    const modifiedFiles = toolResults
+      .filter(r => !r.result.isError && (r.toolName === 'write_file' || r.toolName === 'edit_file' || r.toolName === 'patch_file'))
+      .map(r => r.args.file_path)
+      .filter(Boolean)
+
+    if (modifiedFiles.length > 0) {
+      const commitResult = autoCommit(modifiedFiles)
+      if (commitResult.success && commitResult.hash) {
+        trackAICommit(commitResult.hash)
+        onText?.(`\n${commitResult.message}\n`)
+      }
+    }
+
     // 将结果加入消息
     for (const { toolCallId, result } of toolResults) {
       messages.push({ role: 'tool', tool_call_id: toolCallId, content: result.content })
+    }
+
+    // 成本追踪
+    if (response.usage) {
+      recordCost(response.usage, config.model, 'tool')
+      const alert = checkBudgetLimit()
+      if (alert) {
+        onText?.(`\n${alert.message}\n`)
+        if (alert.level === 'exceeded') {
+          // 尝试降级模型
+          const downgraded = getDowngradedModel(config.model)
+          if (downgraded) {
+            config.model = downgraded
+            onText?.(`\n📉 模型已降级到: ${downgraded}\n`)
+          } else {
+            onError?.('预算已用尽且无可用降级模型。请增加预算或明天再试。')
+            break
+          }
+        }
+      }
     }
   }
 

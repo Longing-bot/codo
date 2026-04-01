@@ -13,6 +13,12 @@ import { listSessions, getSession, getMessages, initWorkspaceSession, deleteSess
 import { listAllLoadedSkills, formatSkillsList } from '../skills/index.js'
 import { runHealthCheck, formatHealthReport } from '../healthcheck/index.js'
 import { getMCPServerStatuses, initMCPServers } from '../mcp/index.js'
+import { getGitStatus, formatGitStatus, commitStaged, autoCommit, stageFiles, createBranch, switchBranch, listBranches, undoLastCommit, getGitDiff, getGitDiffStat, detectConflicts, formatConflictWarning, generateCommitMessage, isGitRepo } from '../git/index.js'
+import { indexWorkspace, searchSymbols, getIndexStats, formatSymbols, getFileSymbols } from '../indexer/index.js'
+import { addWatch, removeWatch, listWatch, formatWatchList, clearWatch, enableWatch, disableWatch, startWatcher, stopWatcher } from '../watch/index.js'
+import { getCurrentPlan, cancelPlan, formatPlan, parsePlanFromLLM, createPlan, confirmPlan, reviseStep } from '../planning/index.js'
+import { routeModel, formatRouterStatus, enableRouter, disableRouter, setRoute, getRouterConfig, type TaskCategory } from '../router/index.js'
+import { setBudgetLimit, formatBudgetStatus, formatCostReport, loadBudget, getCostUsage, checkBudgetLimit, type BudgetPeriod } from '../budget/index.js'
 
 export interface Command {
   name: string
@@ -56,16 +62,34 @@ const help: Command = {
   模型
     /model <name>      切换/查看模型
     /think             切换深度思考模式
+    /router            模型路由配置
+
+  Git
+    /git status        查看 git 状态
+    /git diff          查看变更
+    /git commit        AI 生成 commit message 并提交
+    /git branch [name] 查看/创建分支
+    /git undo          撤销上一次 commit
+
+  文件
+    /diff              查看本次会话的文件变更
+    /revert <file>     回退文件到修改前的状态
+    /symbols <query>   搜索代码符号
+    /symbols --index   重建代码索引
+    /watch             文件监控
+
+  规划
+    /plan              查看执行计划
+
+  预算
+    /budget            预算状态
+    /budget report     成本报告
 
   配置
     /config            查看当前配置
     /policy <mode>     切换权限模式
     /approval <mode>   切换审批模式
     /init              生成默认配置
-
-  文件
-    /diff              查看本次会话的文件变更
-    /revert <file>     回退文件到修改前的状态
 
   会话
     /export <id>       导出会话为 Markdown
@@ -575,19 +599,245 @@ const contextCmd: Command = {
   },
 }
 
-// ─── /quit ─────────────────────────────────────────────────────────────
-const quit: Command = {
-  name: 'quit',
-  description: '退出',
-  aliases: ['q', 'exit'],
-  execute: () => { process.exit(0); return { type: 'info', content: '' } },
+// ─── /git ──────────────────────────────────────────────────────────────
+const gitCmd: Command = {
+  name: 'git',
+  description: 'Git 操作：status, diff, commit, branch, undo',
+  aliases: [],
+  argumentHint: '<status|diff|commit|branch|undo> [args]',
+  execute: (args) => {
+    if (!isGitRepo()) {
+      return { type: 'info', content: '当前目录不是 git 仓库。' }
+    }
+
+    const parts = args.split(/\s+/)
+    const subCmd = parts[0] || 'status'
+
+    switch (subCmd) {
+      case 'status': {
+        const status = getGitStatus()
+        return { type: 'info', content: formatGitStatus(status) }
+      }
+      case 'diff': {
+        const diff = getGitDiff(parts[1] === '--cached')
+        return { type: 'info', content: diff }
+      }
+      case 'commit': {
+        const msg = parts.slice(1).join(' ')
+        if (msg) {
+          // 带消息的 commit
+          const result = commitStaged(msg)
+          return { type: result.success ? 'action' : 'error', content: result.message }
+        }
+        // 无消息，用 AI 生成
+        const files = getGitStatus().staged
+        if (files.length === 0) {
+          return { type: 'info', content: '没有已 staged 的文件。' }
+        }
+        const aiMsg = generateCommitMessage(files)
+        const result = commitStaged(aiMsg)
+        return { type: result.success ? 'action' : 'error', content: result.message }
+      }
+      case 'branch': {
+        const branchName = parts[1]
+        if (!branchName) {
+          const branches = listBranches()
+          const status = getGitStatus()
+          return { type: 'info', content: `当前分支: ${status.branch}\n\n分支列表:\n${branches.map(b => `  ${b === status.branch ? '* ' : '  '}${b}`).join('\n')}` }
+        }
+        // 检查是否是切换已存在的分支
+        const branches = listBranches()
+        if (branches.includes(branchName)) {
+          const result = switchBranch(branchName)
+          return { type: result.success ? 'action' : 'error', content: result.message }
+        }
+        const result = createBranch(branchName)
+        return { type: result.success ? 'action' : 'error', content: result.message }
+      }
+      case 'undo': {
+        const result = undoLastCommit()
+        return { type: result.success ? 'action' : 'error', content: result.message }
+      }
+      case 'diff-stat': {
+        const stat = getGitDiffStat()
+        return { type: 'info', content: stat }
+      }
+      default:
+        return { type: 'info', content: `用法: /git <status|diff|commit|branch|undo> [args]` }
+    }
+  },
+}
+
+// ─── /symbols ──────────────────────────────────────────────────────────
+const symbolsCmd: Command = {
+  name: 'symbols',
+  description: '搜索代码符号（函数/类/方法）',
+  aliases: ['sym'],
+  argumentHint: '<query> | --index | --stats',
+  execute: (args) => {
+    if (args === '--index' || args === '--reindex') {
+      const stats = indexWorkspace()
+      return { type: 'action', content: `✅ 代码索引已更新: ${stats.files} 个文件, ${stats.symbols} 个符号` }
+    }
+    if (args === '--stats' || args === '') {
+      const stats = getIndexStats()
+      if (stats.symbols === 0) {
+        return { type: 'info', content: '代码索引为空。运行 /symbols --index 创建索引。' }
+      }
+      const updated = stats.lastUpdated ? new Date(stats.lastUpdated).toLocaleString() : '未知'
+      return { type: 'info', content: `代码索引: ${stats.files} 文件, ${stats.symbols} 符号\n更新时间: ${updated}\n\n搜索: /symbols <query>` }
+    }
+    const results = searchSymbols(args)
+    return { type: 'info', content: formatSymbols(results) }
+  },
+}
+
+// ─── /watch ────────────────────────────────────────────────────────────
+const watchCmd: Command = {
+  name: 'watch',
+  description: '监控文件变更',
+  aliases: [],
+  argumentHint: '<add|remove|list|clear> [pattern]',
+  execute: async (args) => {
+    const parts = args.split(/\s+/)
+    const subCmd = parts[0]
+
+    if (!subCmd || subCmd === 'list') {
+      return { type: 'info', content: formatWatchList(listWatch()) }
+    }
+
+    if (subCmd === 'add') {
+      const pattern = parts.slice(1).join(' ')
+      if (!pattern) {
+        return { type: 'info', content: '用法: /watch add <pattern>\n示例: /watch add *.ts  /watch add src/**/*.tsx' }
+      }
+      const entry = addWatch(pattern)
+      await startWatcher()
+      return { type: 'action', content: `✅ 已添加 watch: ${pattern} [${entry.id}]` }
+    }
+
+    if (subCmd === 'remove') {
+      const id = parts[1]
+      if (!id) return { type: 'info', content: '用法: /watch remove <id>' }
+      const removed = removeWatch(id)
+      return { type: removed ? 'action' : 'error', content: removed ? `已移除 watch: ${id}` : `未找到 watch: ${id}` }
+    }
+
+    if (subCmd === 'clear') {
+      clearWatch()
+      stopWatcher()
+      return { type: 'action', content: '✅ 已清除所有 watch 规则' }
+    }
+
+    return { type: 'info', content: '用法: /watch <add|remove|list|clear> [pattern]' }
+  },
+}
+
+// ─── /plan ─────────────────────────────────────────────────────────────
+const planCmd: Command = {
+  name: 'plan',
+  description: '查看/管理执行计划',
+  aliases: [],
+  argumentHint: '<show|cancel|revise N description>',
+  execute: (args) => {
+    const plan = getCurrentPlan()
+    if (!plan) {
+      return { type: 'info', content: '当前没有执行计划。复杂任务会自动生成计划。' }
+    }
+
+    if (args === 'cancel') {
+      cancelPlan()
+      return { type: 'action', content: '✅ 计划已取消。' }
+    }
+
+    if (args.startsWith('revise ')) {
+      const match = args.match(/^revise\s+(\d+)\s+(.+)$/)
+      if (!match) {
+        return { type: 'info', content: '用法: /plan revise <step_number> <new_description>' }
+      }
+      const stepNum = parseInt(match[1])
+      const newDesc = match[2]
+      const ok = reviseStep(stepNum, newDesc)
+      return { type: ok ? 'action' : 'error', content: ok ? `✅ Step ${stepNum} 已更新` : `未找到 Step ${stepNum}` }
+    }
+
+    return { type: 'info', content: formatPlan(plan) }
+  },
+}
+
+// ─── /router ───────────────────────────────────────────────────────────
+const routerCmd: Command = {
+  name: 'router',
+  description: '模型路由配置',
+  aliases: [],
+  argumentHint: '<enable|disable|set|status>',
+  execute: (args) => {
+    const parts = args.split(/\s+/)
+    const subCmd = parts[0] || 'status'
+
+    switch (subCmd) {
+      case 'enable':
+        enableRouter()
+        return { type: 'action', content: '✅ 模型路由已启用。不同任务会自动选择合适的模型。' }
+      case 'disable':
+        disableRouter()
+        return { type: 'action', content: '✅ 模型路由已禁用。' }
+      case 'set': {
+        const category = parts[1] as TaskCategory
+        const model = parts[2]
+        if (!category || !model) {
+          return { type: 'info', content: '用法: /router set <plan|edit|search|chat|code> <model>\n示例: /router set edit gpt-4o' }
+        }
+        setRoute(category, model)
+        return { type: 'action', content: `✅ ${category} → ${model}` }
+      }
+      case 'status':
+      default:
+        return { type: 'info', content: formatRouterStatus() }
+    }
+  },
+}
+
+// ─── /budget ───────────────────────────────────────────────────────────
+const budgetCmd: Command = {
+  name: 'budget',
+  description: '预算控制和成本报告',
+  aliases: [],
+  argumentHint: '<status|set|report>',
+  execute: (args) => {
+    const parts = args.split(/\s+/)
+    const subCmd = parts[0] || 'status'
+
+    switch (subCmd) {
+      case 'set': {
+        const period = parts[1] as BudgetPeriod
+        const amount = parseFloat(parts[2])
+        if (!period || isNaN(amount)) {
+          return { type: 'info', content: '用法: /budget set <daily|weekly|monthly> <amount_usd>\n示例: /budget set daily 5.00' }
+        }
+        if (!['daily', 'weekly', 'monthly'].includes(period)) {
+          return { type: 'error', content: '无效的周期。可选: daily, weekly, monthly' }
+        }
+        setBudgetLimit(period, amount)
+        return { type: 'action', content: `✅ ${period} 预算已设置为 $${amount.toFixed(2)}` }
+      }
+      case 'report': {
+        const days = parseInt(parts[1]) || 30
+        return { type: 'info', content: formatCostReport(days) }
+      }
+      case 'status':
+      default:
+        return { type: 'info', content: formatBudgetStatus() }
+    }
+  },
 }
 
 // ─── 注册表 ────────────────────────────────────────────────────────────
 const COMMANDS: Command[] = [
   help, clear, compact, history, config, usage, model, think, policy, approval,
   agent, dream, resume, sessions, search, exportCmd, tagCmd, cleanup, init,
-  skills, mcp, doctor, sidebar, diffCmd, revertCmd, contextCmd, quit,
+  skills, mcp, doctor, sidebar, diffCmd, revertCmd, contextCmd,
+  gitCmd, symbolsCmd, watchCmd, planCmd, routerCmd, budgetCmd,
 ]
 
 export function processCommand(input: string, context: CommandContext): CommandResult | Promise<CommandResult> | null {
