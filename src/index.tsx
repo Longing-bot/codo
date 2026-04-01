@@ -4,6 +4,7 @@ import React, { useState } from 'react'
 import { render } from 'ink'
 import { App } from './ui/App.js'
 import { TrustConfirm } from './ui/components/TrustConfirm.js'
+import { WelcomePanel } from './ui/components/WelcomePanel.js'
 import { loadConfig, saveConfig, hasApiKey, detectProvider, loadSession } from './config/index.js'
 import { runQuery } from './query/index.js'
 import { processCommand } from './commands/index.js'
@@ -54,14 +55,25 @@ if (mi !== -1 && args[mi + 1]) { config.model = args[mi + 1]; saveConfig(config)
 const prompt = args.filter((a: string) => !a.startsWith('-') && a !== args[mi + 1]).join(' ') || undefined
 
 // ─── 带信任确认的 App 包装 ────────────────────────────────────────────
-const TrustedApp: React.FC<{ initialPrompt?: string }> = ({ initialPrompt }) => {
-  const [trusted, setTrusted] = useState(false)
+type Stage = 'trust' | 'welcome' | 'app'
 
-  if (!trusted) {
+const TrustedApp: React.FC<{ initialPrompt?: string }> = ({ initialPrompt }) => {
+  const [stage, setStage] = useState<Stage>('trust')
+
+  if (stage === 'trust') {
     return React.createElement(TrustConfirm, {
       cwd: process.cwd(),
-      onAccept: () => setTrusted(true),
+      onAccept: () => setStage('welcome'),
       onReject: () => process.exit(0),
+    })
+  }
+
+  if (stage === 'welcome') {
+    return React.createElement(WelcomePanel, {
+      model: config.model,
+      provider: detectProvider(config),
+      cwd: process.cwd(),
+      onContinue: () => setStage('app'),
     })
   }
 
