@@ -78,6 +78,8 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
   const [turn, setTurn] = useState(0)
   const [turnStart, setTurnStart] = useState(Date.now())
   const [spinnerStatus, setSpinnerStatus] = useState('思考中')
+  const [currentToolName, setCurrentToolName] = useState<string | undefined>(undefined)
+  const [toolStartTime, setToolStartTime] = useState<number>(0)
   const [msgs, setMsgs] = useState<Message[]>(() => {
     const saved = loadSession()
     return saved.length > 0 ? saved : createREPLState().messages
@@ -145,6 +147,8 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
         },
         onToolStart: (n, a) => {
           setSpinnerStatus(toolStatus(n))
+          setCurrentToolName(n)
+          setToolStartTime(Date.now())
           if (n === 'bash' && isDangerousCommand(a)) {
             add({ type: 'tool', content: `[危险] ${n}(${a.length > 50 ? a.slice(0, 50) + '…' : a})`, toolName: n, toolArgs: a })
           } else {
@@ -152,17 +156,18 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
           }
         },
         onToolResult: (n, r) => {
+          const elapsed = toolStartTime > 0 ? Date.now() - toolStartTime : 0
           const lines = r.content.split('\n')
           if ((n === 'edit_file' || n === 'write_file') && !r.isError) {
             const match = r.content.match(/\[(\+\d+ -?\d* lines?)\]/)
             const summary = match ? match[1] : ''
-            add({ type: 'toolResult', content: summary || lines[0].slice(0, 70) })
+            add({ type: 'toolResult', content: summary || lines[0].slice(0, 70), toolName: n, duration: elapsed, success: !r.isError })
           } else if (n === 'read_file' && !r.isError && lines.length > 1) {
-            add({ type: 'toolResult', content: lines[0] })
+            add({ type: 'toolResult', content: lines[0], toolName: n, duration: elapsed, success: !r.isError })
           } else if (n === 'bash' && !r.isError) {
-            add({ type: 'toolResult', content: lines[0].slice(0, 70) || '(空输出)' })
+            add({ type: 'toolResult', content: lines[0].slice(0, 70) || '(空输出)', toolName: n, duration: elapsed, success: !r.isError })
           } else {
-            add({ type: 'toolResult', content: lines[0].slice(0, 70) || '(空输出)' })
+            add({ type: 'toolResult', content: lines[0].slice(0, 70) || '(空输出)', toolName: n, duration: elapsed, success: !r.isError })
           }
           if (lines.length > 1 && n !== 'read_file') {
             add({ type: 'system', content: `(${lines.length} 行输出)` })
@@ -370,7 +375,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
           <MessageList entries={entries} />
 
           {/* Spinner */}
-          {running && !pendingApproval && <Spinner turn={turn} startTime={turnStart} status={spinnerStatus} />}
+          {running && !pendingApproval && <Spinner turn={turn} startTime={turnStart} status={spinnerStatus} toolName={currentToolName} />}
 
           {/* Approval Panel */}
           {pendingApproval && (

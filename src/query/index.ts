@@ -22,7 +22,7 @@ import { checkPermission } from '../permissions/index.js'
 import { collectContext, formatContextForPrompt } from '../context/index.js'
 import { snapshotBefore, recordChange, formatChangeSummary } from '../tracker/index.js'
 import { needsApproval, handleApprovalDecision, type ApprovalDecision, type ApprovalRequest } from '../approval/index.js'
-import { saveSession as saveSessionDB, initWorkspaceSession } from '../storage/index.js'
+import { saveSession as saveSessionDB, initWorkspaceSession, createTask, addTaskStep, updateTaskStatus, updateTaskStep, getLatestUnfinishedTask, getTaskSteps, formatTaskProgress, getWorkspaceSessionId, type TaskStep } from '../storage/index.js'
 import { getMCPTools, initMCPServers } from '../mcp/index.js'
 import { autoCommit, trackAICommit, stageFile } from '../git/index.js'
 import { collectDebugContext, shouldAutoRetry, buildDebugFeedback, formatDebugSummary } from '../debug/index.js'
@@ -127,6 +127,183 @@ function formatToolResultForDisplay(toolName: string, result: ToolResult): strin
   }
 }
 
+// ─── 反思消息注入 ──────────────────────────────────────────────────────
+const REFLECTION_PROMPT = `回顾刚才的操作，检查是否有错误或遗漏。如果有问题，主动修正。特别注意：
+- 工具调用是否成功返回？
+- 结果是否符合预期？
+- 是否遗漏了必要的步骤？
+- 输出是否完整？`
+
+const SELF_CHECK_PROMPT = `在回复用户之前，进行最终自我检查：
+1. 所有工具调用是否成功？
+2. 任务是否完整完成？
+3. 是否有遗漏的步骤需要补充？
+4. 如果发现问题，立即修正，不需要用户提醒。
+回复"SELF_CHECK_PASS"如果一切正常，否则描述问题并修正。`
+
+// ─── Plan-Execute-Verify 检测 ──────────────────────────────────────────
+// 判断是否为复杂任务（需要计划模式）
+function isComplexTask(userMessage: string, toolCallCount: number): boolean {
+  // 多个工具调用 → 复杂
+  if (toolCallCount > 1) return true
+
+  // 关键词检测
+  const complexPatterns = [
+    /重构|refactor/i,
+    /迁移|migrate/i,
+    /实现.*功能|implement.*feature/i,
+    /修复.*多个|fix.*multiple/i,
+    /创建.*文件.*并|create.*files.*and/i,
+    /修改.*多个|modify.*multiple/i,
+    /搜索.*然后|search.*then/i,
+    /查找.*修改|find.*modify/i,
+    /分析.*修复|analyze.*fix/i,
+    /全面|comprehensive/i,
+    /整个|entire|whole/i,
+    /所有|all\s+/i,
+  ]
+  return complexPatterns.some(p => p.test(userMessage))
+}
+
+// 动态工具选择：根据任务类型暴露不同工具集
+function selectToolsForTask(toolCalls: Array<{ function: { name: string } }>): string[] {
+  const names = toolCalls.map(tc => tc.function.name)
+
+  // 读取类任务
+  if (names.every(n => ['read_file', 'glob', 'grep', 'lsp_hover', 'lsp_references', 'lsp_definition'].includes(n))) {
+    return ['read_file', 'glob', 'grep', 'think', 'lsp_hover', 'lsp_references', 'lsp_definition']
+  }
+
+  // 修改类任务
+  if (names.some(n => ['write_file', 'edit_file', 'patch_file'].includes(n))) {
+    return ['read_file', 'write_file', 'edit_file', 'patch_file', 'glob', 'grep', 'think']
+  }
+
+  // 命令执行类
+  if (names.some(n => n === 'bash' || n === 'test_runner')) {
+    return ['bash', 'test_runner', 'read_file', 'glob', 'grep', 'think']
+  }
+
+  // 搜索类
+  if (names.some(n => n === 'web_search' || n === 'fetch')) {
+    return ['web_search', 'fetch', 'read_file', 'think']
+  }
+
+  // 默认：返回所有活跃工具
+  return []
+}
+
+// ─── 自动验证：编辑后自动 lint/typecheck ────────────────────────────────
+interface AutoVerifyResult {
+  hasErrors: boolean
+  output: string
+}
+
+async function autoVerifyEdit(filePath: string): Promise<AutoVerifyResult> {
+  const { resolve: pathResolve, extname, basename, join, dirname } = await import('path')
+  const { existsSync, readFileSync } = await import('fs')
+  const { execSync } = await import('child_process')
+
+  const absPath = pathResolve(filePath)
+  const ext = extname(absPath)
+  const dir = dirname(absPath)
+
+  // 检测项目类型
+  const isNode = existsSync(join(dir, 'package.json')) || existsSync('package.json')
+  const isPython = ext === '.py' || existsSync(join(dir, 'pyproject.toml')) || existsSync('pyproject.toml')
+  const isGo = ext === '.go' || existsSync(join(dir, 'go.mod')) || existsSync('go.mod')
+  const isTS = ['.ts', '.tsx'].includes(ext)
+
+  const results: string[] = []
+
+  try {
+    // TypeScript 类型检查
+    if (isTS && isNode) {
+      try {
+        execSync(`npx tsc --noEmit --skipLibCheck ${absPath}`, {
+          encoding: 'utf-8',
+          timeout: 10000,
+          cwd: dir,
+        })
+        results.push('✅ tsc: 无类型错误')
+      } catch (ex: any) {
+        const stderr = (ex.stderr || '').trim()
+        const stdout = (ex.stdout || '').trim()
+        const errOutput = stderr || stdout
+        if (errOutput) {
+          // 只取前 5 行错误
+          const errLines = errOutput.split('\n').slice(0, 5).join('\n')
+          results.push(`⚠️ tsc 错误:\n${errLines}`)
+        }
+      }
+    }
+
+    // ESLint
+    if ((isTS || ext === '.js' || ext === '.jsx') && isNode) {
+      try {
+        const eslintPath = join(dir, 'node_modules', '.bin', 'eslint')
+        if (existsSync(eslintPath)) {
+          execSync(`npx eslint ${absPath} --format compact --no-error-on-unmatched-pattern 2>/dev/null`, {
+            encoding: 'utf-8',
+            timeout: 10000,
+            cwd: dir,
+          })
+          results.push('✅ eslint: 无错误')
+        }
+      } catch (ex: any) {
+        const output = (ex.stdout || '').trim()
+        if (output && !output.includes('not found') && !output.includes('Cannot find')) {
+          const errLines = output.split('\n').slice(0, 5).join('\n')
+          results.push(`⚠️ eslint:\n${errLines}`)
+        }
+      }
+    }
+
+    // Python syntax check
+    if (isPython) {
+      try {
+        execSync(`python3 -m py_compile ${absPath}`, {
+          encoding: 'utf-8',
+          timeout: 10000,
+        })
+        results.push('✅ py_compile: 语法正确')
+      } catch (ex: any) {
+        const errOutput = (ex.stderr || ex.stdout || '').trim()
+        if (errOutput) {
+          const errLines = errOutput.split('\n').slice(0, 5).join('\n')
+          results.push(`⚠️ Python 语法错误:\n${errLines}`)
+        }
+      }
+    }
+
+    // Go vet
+    if (isGo) {
+      try {
+        execSync(`go vet ${absPath}`, {
+          encoding: 'utf-8',
+          timeout: 10000,
+        })
+        results.push('✅ go vet: 无问题')
+      } catch (ex: any) {
+        const errOutput = (ex.stderr || '').trim()
+        if (errOutput) {
+          const errLines = errOutput.split('\n').slice(0, 5).join('\n')
+          results.push(`⚠️ go vet:\n${errLines}`)
+        }
+      }
+    }
+  } catch {
+    // 验证过程出错不影响主流程
+  }
+
+  if (results.length === 0) {
+    return { hasErrors: false, output: '' }
+  }
+
+  const hasErrors = results.some(r => r.startsWith('⚠️'))
+  return { hasErrors, output: results.join('\n') }
+}
+
 // ─── 主循环 ───────────────────────────────────────────────────────────
 export async function runQuery(
   userMessage: string,
@@ -164,6 +341,7 @@ export async function runQuery(
   const budget = createBudgetTracker()
   let lastCallRecord: CallRecord | null = null
   let totalToolRounds = 0
+  let taskId: string | null = null
 
   for (let turn = 1; turn <= MAX_TOOL_ROUNDS; turn++) {
     onTurn?.(turn)
@@ -225,7 +403,24 @@ export async function runQuery(
 
     // 没有工具调用 → 结束
     if (!response.toolCalls?.length) {
-      messages.push({ role: 'assistant', content: response.content })
+      // 自我检查：如果之前有工具调用且没有做自我检查，做一次最终验证
+      if (totalToolRounds > 0 && !response.content?.includes('SELF_CHECK_PASS')) {
+        // 检查是否已经做过自我检查（上一条是 SELF_CHECK_PROMPT）
+        const lastMsg = messages[messages.length - 1]
+        if (lastMsg?.content !== SELF_CHECK_PROMPT) {
+          messages.push({ role: 'user', content: SELF_CHECK_PROMPT })
+          continue
+        }
+      }
+
+      // 清理 SELF_CHECK_PASS 标记
+      const cleanContent = response.content?.replace('SELF_CHECK_PASS', '').trim() || response.content
+      messages.push({ role: 'assistant', content: cleanContent })
+
+      // 标记任务完成
+      if (taskId) {
+        updateTaskStatus(taskId, 'completed')
+      }
       break
     }
 
@@ -264,6 +459,16 @@ export async function runQuery(
     if (totalToolRounds > MAX_TOOL_ROUNDS) {
       onError?.(`已达到最大工具调用轮数（${MAX_TOOL_ROUNDS}）。请使用 /compact 压缩后继续。`)
       break
+    }
+
+    // 创建任务记录（首次工具调用时）
+    const sessionId = getWorkspaceSessionId()
+    if (!taskId && response.toolCalls.length > 0) {
+      const planJson = JSON.stringify({ turn, toolCalls: response.toolCalls.map(tc => tc.function.name) })
+      taskId = createTask(sessionId, planJson, response.toolCalls.length)
+      if (taskId) {
+        updateTaskStatus(taskId, 'running')
+      }
     }
 
     // 检查是否需要延迟工具激活
@@ -377,6 +582,35 @@ export async function runQuery(
       // Post-tool hooks
       result = await executePostToolHooks(toolName, args, result)
 
+      // 自动验证：编辑文件后自动 lint/typecheck
+      if (isFileEdit && !result.isError) {
+        const verifyResult = await autoVerifyEdit(args.file_path)
+        if (verifyResult.output) {
+          if (verifyResult.hasErrors) {
+            // 有错误，附加到结果中让 LLM 看到并修复
+            result = { ...result, content: result.content + '\n\n🔍 自动验证:\n' + verifyResult.output }
+            onText?.(`\n⚠️ 编辑验证发现问题:\n${verifyResult.output}\n`)
+          } else {
+            // 无错误，静默通过
+            onText?.(`\n${verifyResult.output}\n`)
+          }
+        }
+      }
+
+      // 任务步进追踪
+      if (taskId) {
+        const stepNum = toolResults.length + 1
+        addTaskStep(taskId, {
+          step: stepNum,
+          tool: toolName,
+          args: JSON.stringify(args).slice(0, 200),
+          result: result.content.slice(0, 200),
+          status: result.isError ? 'failed' : 'completed',
+          duration: 0,
+        })
+        updateTaskStep(taskId, stepNum)
+      }
+
       onToolResult?.(toolName, result)
       return { toolCallId: tc.id, result, toolName, args }
     })
@@ -401,6 +635,23 @@ export async function runQuery(
     // 将结果加入消息
     for (const { toolCallId, result } of toolResults) {
       messages.push({ role: 'tool', tool_call_id: toolCallId, content: result.content })
+    }
+
+    // 反思机制：注入反思提示（在工具结果之后，下一轮 LLM 调用之前）
+    const hasErrors = toolResults.some(r => r.result.isError)
+    if (hasErrors || toolResults.length > 1) {
+      // 有错误或多个工具调用时，注入反思消息
+      messages.push({
+        role: 'system',
+        content: REFLECTION_PROMPT,
+      })
+    }
+
+    // 任务完成/失败时更新状态
+    if (taskId) {
+      if (hasErrors) {
+        updateTaskStatus(taskId, 'failed', toolResults.find(r => r.result.isError)?.result.content.slice(0, 200))
+      }
     }
 
     // 成本追踪

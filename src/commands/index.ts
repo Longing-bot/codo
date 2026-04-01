@@ -9,7 +9,7 @@ import { estimateMessageTokens, getContextStats } from '../memory/index.js'
 import { collectContext, formatContextForPrompt } from '../context/index.js'
 import { getChangedFiles, getFileDiff, revertFile, getTrackerStats, clearTracker } from '../tracker/index.js'
 import { getApprovalMode, setApprovalMode } from '../approval/index.js'
-import { listSessions, getSession, getMessages, initWorkspaceSession, deleteSession, type SessionRecord } from '../storage/index.js'
+import { listSessions, getSession, getMessages, initWorkspaceSession, deleteSession, getLatestUnfinishedTask, getTaskSteps, formatTaskProgress, listTasks, updateTaskStatus, getTask, type SessionRecord, type TaskRecord } from '../storage/index.js'
 import { listAllLoadedSkills, formatSkillsList } from '../skills/index.js'
 import { runHealthCheck, formatHealthReport } from '../healthcheck/index.js'
 import { getMCPServerStatuses, initMCPServers } from '../mcp/index.js'
@@ -104,6 +104,9 @@ const help: Command = {
   信息
     /context           显示当前上下文使用情况
     /usage (cost/)     查看 token 用量和花费
+    /task              查看当前任务进度
+    /task list         列出历史任务
+    /resume-task       恢复最近未完成的任务
 
   其他
     /agent <task>      运行子代理
@@ -832,12 +835,91 @@ const budgetCmd: Command = {
   },
 }
 
+// ─── /task ─────────────────────────────────────────────────────────────
+const taskCmd: Command = {
+  name: 'task',
+  description: '查看当前/历史任务进度',
+  aliases: [],
+  argumentHint: '<可选：task_id 或 list>',
+  execute: (args) => {
+    const sid = initWorkspaceSession()
+
+    if (args === 'list' || args === 'ls') {
+      const tasks = listTasks(sid, 10)
+      if (tasks.length === 0) {
+        return { type: 'info', content: '没有任务记录。任务会在 agent loop 执行时自动创建。' }
+      }
+      const lines = ['任务列表:\n']
+      for (const t of tasks) {
+        const statusIcon: Record<string, string> = {
+          pending: '⏳', running: '🔄', completed: '✅', failed: '❌', paused: '⏸️',
+        }
+        const time = t.started_at?.slice(0, 16) || '?'
+        lines.push(`  ${statusIcon[t.status] || '?'} ${t.id}  ${time}  ${t.current_step}/${t.total_steps} 步  ${t.status}`)
+      }
+      return { type: 'info', content: lines.join('\n') }
+    }
+
+    if (args) {
+      // 查看指定任务
+      const task = getTask(args)
+      if (!task) {
+        return { type: 'error', content: `任务不存在: ${args}` }
+      }
+      return { type: 'info', content: formatTaskProgress(task) }
+    }
+
+    // 查看最新的未完成任务
+    const task = getLatestUnfinishedTask(sid)
+    if (!task) {
+      return { type: 'info', content: '当前没有未完成的任务。' }
+    }
+    return { type: 'info', content: formatTaskProgress(task) }
+  },
+}
+
+// ─── /resume-task ──────────────────────────────────────────────────────
+const resumeTaskCmd: Command = {
+  name: 'resume-task',
+  description: '恢复最近未完成的任务',
+  aliases: ['rt'],
+  argumentHint: '<可选：task_id>',
+  execute: (args, ctx) => {
+    const sid = initWorkspaceSession()
+
+    let task: TaskRecord | null = null
+    if (args) {
+      const { getTask } = require('../storage/index.js') as { getTask: (id: string) => TaskRecord | null }
+      task = getTask(args)
+    } else {
+      task = getLatestUnfinishedTask(sid)
+    }
+
+    if (!task) {
+      return { type: 'info', content: '没有找到未完成的任务。' }
+    }
+
+    const steps = getTaskSteps(task.id)
+    const completedSteps = steps.filter(s => s.status === 'completed')
+    const remainingSteps = task.total_steps - completedSteps.length
+
+    // 标记为 running
+    updateTaskStatus(task.id, 'running')
+
+    return {
+      type: 'action',
+      content: `🔄 已恢复任务 ${task.id}\n已完成: ${completedSteps.length}/${task.total_steps} 步\n剩余: ${remainingSteps} 步\n\n任务详情:\n${formatTaskProgress(task)}`,
+    }
+  },
+}
+
 // ─── 注册表 ────────────────────────────────────────────────────────────
 const COMMANDS: Command[] = [
   help, clear, compact, history, config, usage, model, think, policy, approval,
   agent, dream, resume, sessions, search, exportCmd, tagCmd, cleanup, init,
   skills, mcp, doctor, sidebar, diffCmd, revertCmd, contextCmd,
   gitCmd, symbolsCmd, watchCmd, planCmd, routerCmd, budgetCmd,
+  taskCmd, resumeTaskCmd,
 ]
 
 export function processCommand(input: string, context: CommandContext): CommandResult | Promise<CommandResult> | null {

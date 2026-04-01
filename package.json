@@ -18,6 +18,7 @@
     "@types/diff": "^7.0.2",
     "better-sqlite3": "^12.8.0",
     "chokidar": "^5.0.0",
+    "cli-highlight": "^2.1.11",
     "diff": "^8.0.4",
     "ink": "^5.1.0",
     "ink-spinner": "^5.0.0",

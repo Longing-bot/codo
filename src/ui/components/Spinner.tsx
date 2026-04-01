@@ -7,9 +7,30 @@ export interface SpinnerProps {
   status: string
   startTime: number
   turn: number
+  toolName?: string   // 当前执行的工具名
 }
 
-export function Spinner({ status, startTime, turn }: SpinnerProps) {
+// 工具 emoji 映射
+function toolIcon(name?: string): string {
+  if (!name) return ''
+  const map: Record<string, string> = {
+    read_file: '📖',
+    write_file: '✏️',
+    edit_file: '📝',
+    patch_file: '🔧',
+    bash: '⚡',
+    glob: '🔍',
+    grep: '🔎',
+    web_search: '🌐',
+    fetch: '📡',
+    think: '💭',
+    test_runner: '🧪',
+    agent: '🤖',
+  }
+  return map[name] ? map[name] + ' ' : ''
+}
+
+export function Spinner({ status, startTime, turn, toolName }: SpinnerProps) {
   const [frame, setFrame] = useState(0)
   const [elapsed, setElapsed] = useState(0)
 
@@ -28,7 +49,9 @@ export function Spinner({ status, startTime, turn }: SpinnerProps) {
   return (
     <Box marginLeft={2}>
       <Text color="cyan">{SPIN_FRAMES[frame]} </Text>
+      {toolName && <Text color="yellow">{toolIcon(toolName)}</Text>}
       <Text color="cyan">{status}…</Text>
+      {toolName && <Text dimColor> ({toolName})</Text>}
       <Text dimColor> {sec}</Text>
       {turn > 1 && <Text dimColor> · 第 {turn} 轮</Text>}
     </Box>

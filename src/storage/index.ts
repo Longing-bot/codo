@@ -445,6 +445,202 @@ export function initWorkspaceSession(model?: string): string {
   return sid
 }
 
+// ─── Task CRUD ────────────────────────────────────────────────────────
+export interface TaskStep {
+  step: number
+  tool: string
+  args: string       // JSON stringified
+  result: string     // 摘要
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  duration: number   // ms
+  createdAt: string
+}
+
+export interface TaskRecord {
+  id: string
+  session_id: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused'
+  plan: string       // JSON stringified plan
+  current_step: number
+  total_steps: number
+  started_at: string
+  updated_at: string
+  completed_at: string | null
+  error: string | null
+}
+
+function ensureTaskTables() {
+  if (!db) return
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      plan TEXT DEFAULT '',
+      current_step INTEGER NOT NULL DEFAULT 0,
+      total_steps INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      error TEXT,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS task_steps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      step INTEGER NOT NULL,
+      tool TEXT NOT NULL DEFAULT '',
+      args TEXT DEFAULT '',
+      result TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      duration INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_task_steps_task ON task_steps(task_id);
+  `)
+}
+
+// 确保表存在
+ensureTaskTables()
+
+export function createTask(sessionId: string, plan: string, totalSteps: number): string {
+  const database = getDb()
+  if (!database) return ''
+
+  ensureTaskTables()
+  const id = 'task-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  database.prepare(
+    'INSERT INTO tasks (id, session_id, status, plan, total_steps) VALUES (?, ?, ?, ?, ?)'
+  ).run(id, sessionId, 'pending', plan, totalSteps)
+  return id
+}
+
+export function getTask(taskId: string): TaskRecord | null {
+  const database = getDb()
+  if (!database) return null
+  ensureTaskTables()
+  return database.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRecord | null
+}
+
+export function updateTaskStatus(taskId: string, status: TaskRecord['status'], error?: string) {
+  const database = getDb()
+  if (!database) return
+  ensureTaskTables()
+
+  if (status === 'completed' || status === 'failed') {
+    database.prepare(
+      "UPDATE tasks SET status = ?, error = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+    ).run(status, error || null, taskId)
+  } else {
+    database.prepare(
+      "UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(status, taskId)
+  }
+}
+
+export function updateTaskStep(taskId: string, step: number) {
+  const database = getDb()
+  if (!database) return
+  ensureTaskTables()
+  database.prepare(
+    "UPDATE tasks SET current_step = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(step, taskId)
+}
+
+export function addTaskStep(taskId: string, step: Omit<TaskStep, 'createdAt'>): number | null {
+  const database = getDb()
+  if (!database) return null
+  ensureTaskTables()
+
+  const result = database.prepare(
+    'INSERT INTO task_steps (task_id, step, tool, args, result, status, duration) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(taskId, step.step, step.tool, step.args, step.result, step.status, step.duration)
+
+  return result.lastInsertRowid as number
+}
+
+export function updateTaskStepResult(stepId: number, result: string, status: TaskStep['status'], duration: number) {
+  const database = getDb()
+  if (!database) return
+  ensureTaskTables()
+  database.prepare(
+    'UPDATE task_steps SET result = ?, status = ?, duration = ? WHERE id = ?'
+  ).run(result, status, duration, stepId)
+}
+
+export function getTaskSteps(taskId: string): TaskStep[] {
+  const database = getDb()
+  if (!database) return []
+  ensureTaskTables()
+  return database.prepare(
+    'SELECT * FROM task_steps WHERE task_id = ? ORDER BY step ASC'
+  ).all(taskId) as TaskStep[]
+}
+
+export function getLatestUnfinishedTask(sessionId: string): TaskRecord | null {
+  const database = getDb()
+  if (!database) return null
+  ensureTaskTables()
+  return database.prepare(
+    "SELECT * FROM tasks WHERE session_id = ? AND status IN ('pending', 'running', 'paused') ORDER BY updated_at DESC LIMIT 1"
+  ).get(sessionId) as TaskRecord | null
+}
+
+export function listTasks(sessionId: string, limit = 20): TaskRecord[] {
+  const database = getDb()
+  if (!database) return []
+  ensureTaskTables()
+  return database.prepare(
+    'SELECT * FROM tasks WHERE session_id = ? ORDER BY updated_at DESC LIMIT ?'
+  ).all(sessionId, limit) as TaskRecord[]
+}
+
+export function formatTaskProgress(task: TaskRecord): string {
+  const statusIcon: Record<string, string> = {
+    pending: '⏳',
+    running: '🔄',
+    completed: '✅',
+    failed: '❌',
+    paused: '⏸️',
+  }
+
+  const steps = getTaskSteps(task.id)
+  const completedSteps = steps.filter(s => s.status === 'completed').length
+  const failedSteps = steps.filter(s => s.status === 'failed').length
+
+  const lines: string[] = [
+    `${statusIcon[task.status] || '?'} 任务 ${task.id}`,
+    `状态: ${task.status}  进度: ${task.current_step}/${task.total_steps}`,
+    '',
+  ]
+
+  for (const step of steps) {
+    const icon: Record<string, string> = {
+      pending: '  ',
+      running: '▶️',
+      completed: '✅',
+      failed: '❌',
+      skipped: '⏭️',
+    }
+    const dur = step.duration > 0 ? ` (${(step.duration / 1000).toFixed(1)}s)` : ''
+    lines.push(`${icon[step.status] || '  '} Step ${step.step}: ${step.tool}${dur}`)
+    if (step.result) {
+      lines.push(`    ${step.result.slice(0, 80)}`)
+    }
+  }
+
+  if (task.error) {
+    lines.push('', `❌ 错误: ${task.error}`)
+  }
+
+  return lines.join('\n')
+}
+
 // ─── 类型定义 ───────────────────────────────────────────────────────
 export interface SessionRecord {
   id: string
