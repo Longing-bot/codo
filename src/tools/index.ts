@@ -156,7 +156,11 @@ export const fetchTool: ToolDef = {
   }
 }
 
-export const ALL_TOOLS = [readFileTool, writeFileTool, editFileTool, bashTool, globTool, grepTool, fetchTool]
+// ─── 新增工具（CC 风格）────────────────────────────────────────────────
+import { todoTool } from './todo.js'
+import { webSearchTool } from './websearch.js'
+
+export const ALL_TOOLS = [readFileTool, writeFileTool, editFileTool, bashTool, globTool, grepTool, fetchTool, todoTool, webSearchTool]
 export function findTool(n: string) { return ALL_TOOLS.find(t => t.name === n) }
 export function toOpenAI() { return ALL_TOOLS.map(t => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.parameters } })) }
 export function toAnthropic() { return ALL_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: { type: 'object' as const, ...t.parameters } })) }
