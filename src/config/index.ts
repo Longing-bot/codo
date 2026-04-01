@@ -204,16 +204,19 @@ export function getSessionFile(): string {
 // 向后兼容：优先从 SQLite 加载，fallback JSON
 export function loadSession(): Message[] {
   try {
-    const { loadSession: loadFromStorage } = require('../storage/index.js')
-    return loadFromStorage()
+    // 使用动态 import 代替 require（ESM 兼容）
+    const storageModule = require('../storage/index.js') as { loadSession: (id?: string) => Message[] }
+    return storageModule.loadSession()
   } catch {
     // fallback 到旧版 JSON
     const f = getSessionFile()
     if (existsSync(f)) {
       try {
-        const raw = JSON.parse(readFileSync(f, "utf-8"))
-        if (Array.isArray(raw)) return raw
-        if (raw.version && Array.isArray(raw.messages)) return raw.messages
+        const raw: unknown = JSON.parse(readFileSync(f, "utf-8"))
+        if (Array.isArray(raw)) return raw as Message[]
+        if (raw && typeof raw === 'object' && 'version' in raw && Array.isArray((raw as SessionData).messages)) {
+          return (raw as SessionData).messages
+        }
         return []
       } catch(_e) {}
     }
@@ -223,8 +226,8 @@ export function loadSession(): Message[] {
 
 export function saveSession(msgs: Message[]) {
   try {
-    const { saveSession: saveToStorage } = require('../storage/index.js')
-    saveToStorage(undefined, msgs)
+    const storageModule = require('../storage/index.js') as { saveSession: (id: string | undefined, msgs: Message[]) => void }
+    storageModule.saveSession(undefined, msgs)
   } catch {
     // fallback 到旧版 JSON
     const data: SessionData = { version: SESSION_VERSION, messages: msgs.slice(-40) }

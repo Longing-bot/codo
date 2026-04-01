@@ -51,10 +51,10 @@ interface CallRecord {
 
 function hashArgs(args: Record<string, any>): string {
   // 简单哈希：对参数排序后 JSON 序列化
-  const sorted = Object.keys(args).sort().reduce((acc, k) => {
+  const sorted = Object.keys(args).sort().reduce<Record<string, any>>((acc, k) => {
     acc[k] = args[k]
     return acc
-  }, {} as Record<string, any>)
+  }, {})
   return JSON.stringify(sorted)
 }
 
@@ -82,8 +82,8 @@ async function executeToolWithRetry(
     try {
       const result = await tool.execute(args)
       return result
-    } catch (ex: any) {
-      lastError = ex.message || String(ex)
+    } catch (ex: unknown) {
+      lastError = ex instanceof Error ? ex.message : String(ex)
       if (attempt < MAX_RETRIES - 1) {
         const delay = EXPONENTIAL_BACKOFF_BASE * Math.pow(2, attempt)
         await sleep(delay)
@@ -201,9 +201,9 @@ export async function runQuery(
     // ─── LLM 调用 ───────────────────────────────────────────────
     let response
     try {
-      response = await callLLM(messages, tools as any, config, onToken ? { onToken } : undefined)
-    } catch (ex: any) {
-      onError?.(ex.message)
+      response = await callLLM(messages, tools, config, onToken ? { onToken } : undefined)
+    } catch (ex: unknown) {
+      onError?.(ex instanceof Error ? ex.message : String(ex))
       break
     }
 

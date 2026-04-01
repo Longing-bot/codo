@@ -1,6 +1,5 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Box, Text, useInput, useApp } from 'ink'
-import TextInput from 'ink-text-input'
 import { loadConfig, saveConfig, loadSession, getUsageTracker, formatUsd, estimateCost, detectProvider, type Message, type TokenUsage } from '../config/index.js'
 import { runQuery } from '../query/index.js'
 import { createREPLState } from '../repl/index.js'
@@ -8,49 +7,22 @@ import { processCommand, listCommands } from '../commands/index.js'
 import { getContextStats } from '../memory/index.js'
 import { collectContext, getContextSummary } from '../context/index.js'
 import { getChangedFiles, getTrackerStats, formatChangeSummary, clearTracker } from '../tracker/index.js'
-import { getApprovalMode, setApprovalMode, type ApprovalRequest, type ApprovalDecision } from '../approval/index.js'
-import { PermissionDialog } from './components/PermissionDialog.js'
+import { getApprovalMode, type ApprovalRequest, type ApprovalDecision } from '../approval/index.js'
 import { addCommand, HistoryNavigator } from '../history/index.js'
+import { getErrorMessage } from '../errors/index.js'
+
+// 组件导入
+import { StatusBar } from './components/StatusBar.js'
+import { MessageList, type Entry, type EntryType } from './components/MessageList.js'
+import { Spinner } from './components/Spinner.js'
+import { InputBar, FooterBar } from './components/InputBar.js'
+import { Sidebar } from './components/Sidebar.js'
+import { ApprovalPanel } from './components/ApprovalPanel.js'
+
+// Re-export types for backward compatibility
+export type { Entry, EntryType }
 
 interface Props { initialPrompt?: string }
-
-type EntryType = 'user' | 'assistant' | 'tool' | 'toolResult' | 'error' | 'system' | 'command' | 'approval'
-interface Entry {
-  type: EntryType
-  content: string
-  toolName?: string
-  toolArgs?: string
-  timestamp?: number
-}
-
-// ─── Spinner ────────────────────────────────────────────────────────
-const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-function Spinner({ status, startTime, turn }: { status: string; startTime: number; turn: number }) {
-  const [frame, setFrame] = useState(0)
-  const [elapsed, setElapsed] = useState(0)
-
-  useEffect(() => {
-    const iv = setInterval(() => {
-      setFrame(f => (f + 1) % SPIN_FRAMES.length)
-      setElapsed(Math.round((Date.now() - startTime) / 1000))
-    }, 80)
-    return () => clearInterval(iv)
-  }, [startTime])
-
-  const sec = elapsed >= 60
-    ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s`
-    : `${elapsed}s`
-
-  return (
-    <Box marginLeft={2}>
-      <Text color="cyan">{SPIN_FRAMES[frame]} </Text>
-      <Text color="cyan">{status}…</Text>
-      <Text dimColor> {sec}</Text>
-      {turn > 1 && <Text dimColor> · 第 {turn} 轮</Text>}
-    </Box>
-  )
-}
 
 // 工具名 → 状态文案
 function toolStatus(name: string): string {
@@ -85,138 +57,6 @@ function isDangerousCommand(command: string): boolean {
   return DANGEROUS_PATTERNS.some(p => p.test(command))
 }
 
-// ─── Approval Panel（3 选项：Yes / No / Always）─────────────────────
-function ApprovalPanel({
-  request,
-  onDecision,
-}: {
-  request: ApprovalRequest
-  onDecision: (decision: ApprovalDecision) => void
-}) {
-  const [focus, setFocus] = useState(0)
-  const options: { label: string; value: ApprovalDecision }[] = [
-    { label: '允许执行', value: 'yes' },
-    { label: '本次会话始终允许', value: 'always' },
-    { label: '拒绝', value: 'no' },
-  ]
-
-  useInput((input, key) => {
-    if (key.upArrow) setFocus(f => (f - 1 + options.length) % options.length)
-    if (key.downArrow) setFocus(f => (f + 1) % options.length)
-    if (key.return) onDecision(options[focus].value)
-    if (key.escape) onDecision('no')
-  })
-
-  const toolColor = request.isDestructive ? 'red' : 'yellow'
-
-  return (
-    <Box flexDirection="column" borderColor={toolColor} borderStyle="round" borderLeft={false} borderRight={false} borderBottom={false} marginTop={1}>
-      <Box paddingX={1}>
-        <Text color={toolColor} bold>审批: {request.description}</Text>
-        <Text dimColor> ({request.toolName})</Text>
-      </Box>
-      <Box flexDirection="column" paddingX={2} paddingTop={1}>
-        <Text color="white" bold>{'❯ '}{request.argsSummary}</Text>
-        {request.isDestructive && <Text color="red">⚠️ 此操作可能是破坏性的</Text>}
-      </Box>
-      <Box flexDirection="column" paddingX={2} paddingTop={1}>
-        {options.map((opt, i) => (
-          <Box key={opt.value}>
-            <Text color={i === focus ? 'cyan' : 'gray'}>
-              {i === focus ? '● ' : '○ '}
-            </Text>
-            <Text color={i === focus ? 'cyan' : 'gray'} bold={i === focus}>
-              {opt.label}
-            </Text>
-          </Box>
-        ))}
-      </Box>
-      <Box paddingX={1} paddingTop={1}>
-        <Text dimColor>↑↓ 选择 · Enter 确认 · Esc 取消</Text>
-      </Box>
-    </Box>
-  )
-}
-
-// ─── 缩短路径显示 ──────────────────────────────────────────────────
-function shortenPath(path: string, maxLen = 30): string {
-  if (path.length <= maxLen) return path
-  const parts = path.split('/')
-  if (parts.length <= 2) return path.slice(-maxLen)
-  return '~/' + parts.slice(-2).join('/')
-}
-
-// ─── 状态栏 ──────────────────────────────────────────────────────────
-function StatusBar({
-  model,
-  provider,
-  cwd,
-  tokenInfo,
-  changeCount,
-  approvalMode,
-}: {
-  model: string
-  provider: string
-  cwd: string
-  tokenInfo: string
-  changeCount: number
-  approvalMode: string
-}) {
-  const left = `${model} (${provider})`
-  const center = shortenPath(cwd)
-  const right = `${tokenInfo}${changeCount > 0 ? ` · 📝${changeCount}` : ''}`
-
-  return (
-    <Box borderStyle="single" borderColor="gray" borderBottom={false} borderLeft={false} borderRight={false} paddingTop={0} paddingBottom={0}>
-      <Box width="33%">
-        <Text color="cyan" bold>{left}</Text>
-      </Box>
-      <Box width="34%" justifyContent="center">
-        <Text dimColor>{center}</Text>
-      </Box>
-      <Box width="33%" justifyContent="flex-end">
-        <Text dimColor>{right}</Text>
-      </Box>
-    </Box>
-  )
-}
-
-// ─── 侧边栏 ──────────────────────────────────────────────────────────
-function Sidebar({
-  entries,
-  changedFiles,
-}: {
-  entries: Entry[]
-  changedFiles: { path: string; summary: string }[]
-}) {
-  const toolCalls = entries.filter(e => e.type === 'tool').slice(-8)
-
-  return (
-    <Box flexDirection="column" width={30} borderStyle="single" borderColor="gray" paddingLeft={1} paddingRight={1}>
-      <Text bold color="yellow">📋 侧边栏</Text>
-
-      {changedFiles.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold dimColor>文件变更:</Text>
-          {changedFiles.slice(0, 6).map((f, i) => (
-            <Text key={i} dimColor>  {shortenPath(f.path, 24)}</Text>
-          ))}
-          {changedFiles.length > 6 && <Text dimColor>  ... 还有 {changedFiles.length - 6} 个</Text>}
-        </Box>
-      )}
-
-      {toolCalls.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold dimColor>工具调用:</Text>
-          {toolCalls.map((t, i) => (
-            <Text key={i} dimColor>  {t.toolName || '?'}</Text>
-          ))}
-        </Box>
-      )}
-    </Box>
-  )
-}
-
 // ─── Tab 补全建议 ──────────────────────────────────────────────────
 function getCompletions(input: string): string[] {
   if (!input.startsWith('/')) return []
@@ -230,7 +70,7 @@ function getCompletions(input: string): string[] {
 
 // ─── App ──────────────────────────────────────────────────────────────
 export const App: React.FC<Props> = ({ initialPrompt }) => {
-  const config = loadConfig()
+  const config = useMemo(() => loadConfig(), [])
   const { exit } = useApp()
   const [entries, setEntries] = useState<Entry[]>([])
   const [input, setInput] = useState('')
@@ -263,7 +103,6 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
   const submit = useCallback(async (text: string) => {
     if (!text.trim()) return
 
-    // 保存到历史
     addCommand(text.trim())
 
     const cmd = await processCommand(text.trim(), {
@@ -350,8 +189,8 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
         },
       })
       setMsgs(updated)
-    } catch (ex: any) {
-      add({ type: 'error', content: ex.message })
+    } catch (ex: unknown) {
+      add({ type: 'error', content: getErrorMessage(ex) })
     }
     setRunning(false)
   }, [config, msgs, add])
@@ -479,7 +318,7 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
     }
   })
 
-  useEffect(() => { if (initialPrompt) submit(initialPrompt) }, [])
+  useEffect(() => { if (initialPrompt) submit(initialPrompt) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const stats = getContextStats(msgs)
   const context = collectContext()
@@ -527,50 +366,8 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
             </Box>
           )}
 
-          {/* Messages */}
-          {entries.map((e, i) => (
-            <Box key={i} marginBottom={0}>
-              {e.type === 'user' && (
-                <Box>
-                  <Text color="blue">{'>'} </Text>
-                  <Text bold>{e.content}</Text>
-                </Box>
-              )}
-              {e.type === 'assistant' && (
-                <Box marginLeft={2}>
-                  <Text>{e.content}</Text>
-                </Box>
-              )}
-              {e.type === 'tool' && (
-                <Box marginLeft={2}>
-                  <Text color="blue">{'>'} </Text>
-                  <Text color="yellow">{e.content}</Text>
-                </Box>
-              )}
-              {e.type === 'toolResult' && (
-                <Box marginLeft={3}>
-                  <Text dimColor>│ </Text>
-                  <Text dimColor>{e.content}</Text>
-                </Box>
-              )}
-              {e.type === 'system' && (
-                <Box marginLeft={3}>
-                  <Text dimColor>│ {e.content}</Text>
-                </Box>
-              )}
-              {e.type === 'command' && (
-                <Box marginLeft={2}>
-                  <Text color="magenta">{e.content}</Text>
-                </Box>
-              )}
-              {e.type === 'error' && (
-                <Box marginLeft={2}>
-                  <Text color="red">{'>'} </Text>
-                  <Text color="red">{e.content}</Text>
-                </Box>
-              )}
-            </Box>
-          ))}
+          {/* 消息列表 */}
+          <MessageList entries={entries} />
 
           {/* Spinner */}
           {running && !pendingApproval && <Spinner turn={turn} startTime={turnStart} status={spinnerStatus} />}
@@ -583,34 +380,24 @@ export const App: React.FC<Props> = ({ initialPrompt }) => {
             />
           )}
 
-          {/* Input box */}
+          {/* 输入栏 */}
           {!running && !pendingApproval && (
-            <Box flexDirection="column" marginTop={1}>
-              <Box borderColor="cyan" borderStyle="round" borderLeft={false} borderRight={false} borderBottom paddingLeft={1} paddingRight={1}>
-                <Text color="green" bold>{'> '}</Text>
-                <TextInput
-                  value={input}
-                  onChange={(v) => {
-                    setInput(v)
-                    // 重置补全
-                    if (completions.length > 0) {
-                      setCompletions([])
-                      setCompletionIndex(-1)
-                    }
-                  }}
-                  onSubmit={submit}
-                  placeholder={searchMode ? '搜索历史...' : ''}
-                />
-              </Box>
-            </Box>
+            <InputBar
+              value={input}
+              onChange={(v) => {
+                setInput(v)
+                if (completions.length > 0) {
+                  setCompletions([])
+                  setCompletionIndex(-1)
+                }
+              }}
+              onSubmit={submit}
+              searchMode={searchMode}
+            />
           )}
 
-          {/* Footer */}
-          {!running && !pendingApproval && (
-            <Box marginTop={1} borderTop borderColor="gray" borderStyle="single" paddingLeft={1}>
-              <Text dimColor>↑↓ 历史 · Tab 补全 · Ctrl+C 取消 · Ctrl+D 退出 · Ctrl+L 清屏 · Ctrl+B 侧边栏 · Ctrl+R 搜索</Text>
-            </Box>
-          )}
+          {/* 底栏 */}
+          <FooterBar visible={!running && !pendingApproval} />
         </Box>
 
         {/* 侧边栏 */}

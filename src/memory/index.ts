@@ -16,7 +16,7 @@ export function createBudgetTracker(): BudgetTracker {
 export type BudgetDecision = { action: 'continue' | 'stop'; nudgeMessage?: string }
 
 // CC 风格：检测是否需要 "continue" 提示
-export function checkBudget(tracker: BudgetTracker, messages: any[], budget: number = 80000): BudgetDecision {
+export function checkBudget(tracker: BudgetTracker, messages: Message[], budget: number = 80000): BudgetDecision {
   const totalTokens = estimateMessageTokens(messages)
   const pct = totalTokens / budget
 
