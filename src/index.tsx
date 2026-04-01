@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // ─── Entry Point ──────────────────────────────────────────────────────────
-import React from 'react'
+import React, { useState } from 'react'
 import { render } from 'ink'
 import { App } from './ui/App.js'
+import { TrustConfirm } from './ui/components/TrustConfirm.js'
 import { loadConfig, saveConfig, hasApiKey, detectProvider, loadSession } from './config/index.js'
 import { runQuery } from './query/index.js'
 import { processCommand } from './commands/index.js'
@@ -52,8 +53,23 @@ const mi = args.indexOf('-m') !== -1 ? args.indexOf('-m') : args.indexOf('--mode
 if (mi !== -1 && args[mi + 1]) { config.model = args[mi + 1]; saveConfig(config) }
 const prompt = args.filter((a: string) => !a.startsWith('-') && a !== args[mi + 1]).join(' ') || undefined
 
+// ─── 带信任确认的 App 包装 ────────────────────────────────────────────
+const TrustedApp: React.FC<{ initialPrompt?: string }> = ({ initialPrompt }) => {
+  const [trusted, setTrusted] = useState(false)
+
+  if (!trusted) {
+    return React.createElement(TrustConfirm, {
+      cwd: process.cwd(),
+      onAccept: () => setTrusted(true),
+      onReject: () => process.exit(0),
+    })
+  }
+
+  return React.createElement(App, { initialPrompt })
+}
+
 if (process.stdin.isTTY && process.stdout.isTTY && !args.includes('--print')) {
-  render(React.createElement(App, { initialPrompt: prompt }))
+  render(React.createElement(TrustedApp, { initialPrompt: prompt }))
 } else {
   if (!prompt) { console.log('edgecli（非交互模式）。用 edgecli --help 查看用法。'); process.exit(0) }
 
