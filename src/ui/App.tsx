@@ -27,14 +27,17 @@ const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '�
 function Spinner({ turn, startTime }: { turn: number; startTime: number }) {
   const [frame, setFrame] = useState(0)
   const [elapsed, setElapsed] = useState(0)
-  const verb = useRef('思考中')
+  const [verbIdx, setVerbIdx] = useState(() => Math.floor(Math.random() * SPIN_VERBS.length))
 
   useEffect(() => {
     const iv = setInterval(() => {
       setFrame(f => (f + 1) % SPIN_FRAMES.length)
       setElapsed(Math.round((Date.now() - startTime) / 1000))
     }, 80)
-    return () => clearInterval(iv)
+    const iv2 = setInterval(() => {
+      setVerbIdx(v => (v + 1) % SPIN_VERBS.length)
+    }, 3000)
+    return () => { clearInterval(iv); clearInterval(iv2) }
   }, [startTime])
 
   const sec = elapsed >= 60
@@ -44,7 +47,7 @@ function Spinner({ turn, startTime }: { turn: number; startTime: number }) {
   return (
     <Box marginLeft={2}>
       <Text color="cyan">{SPIN_FRAMES[frame]} </Text>
-      <Text color="cyan">{verb.current}…</Text>
+      <Text color="cyan">{SPIN_VERBS[verbIdx]}…</Text>
       <Text dimColor> {sec}</Text>
       {turn > 1 && <Text dimColor> · 第 {turn} 轮</Text>}
     </Box>
