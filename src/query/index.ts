@@ -19,6 +19,7 @@ import { buildSystemPrompt } from '../prompts/system.js'
 import { executePreToolHooks, executePostToolHooks, executeStopHooks } from '../hooks/index.js'
 import { createBudgetTracker, checkBudget } from '../memory/index.js'
 import { shouldFlushMemory, buildFlushMessages } from '../memory/flush.js'
+import { shouldExtractMemory, extractSessionMemory, loadSessionMemory } from '../memory/sessionMemory.js'
 import { shouldCompact, autoCompactMessages, COMPACT_PROMPT, runCompactionPipeline } from '../memory/compact.js'
 import { checkPermission } from '../permissions/index.js'
 import { collectContext, formatContextForPrompt } from '../context/index.js'
@@ -777,6 +778,14 @@ export async function runQuery(
       if (hasErrors) {
         updateTaskStatus(state.taskId, 'failed', toolResults.find(r => r.result.isError)?.result.content.slice(0, 200))
       }
+    }
+
+    // Session Memory 提取（CC-inspired，后台异步）
+    if (shouldExtractMemory(messages)) {
+      extractSessionMemory(messages, async (msgs) => {
+        const resp = await callLLM(msgs, [], config)
+        return resp.content
+      }).catch(() => {})  // 静默失败
     }
 
     // 成本追踪
