@@ -16,7 +16,7 @@ import { CodoConfig, Message, detectProvider, getUsageTracker, type TokenUsage, 
 import { callLLM } from '../api/index.js'
 import { findTool, toOpenAI, toAnthropic, getActiveTools, activateLazyTool, CORE_TOOLS, LAZY_TOOLS, type ToolResult } from '../tools/index.js'
 import { buildSystemPrompt } from '../prompts/system.js'
-import { executePreToolHooks, executePostToolHooks } from '../hooks/index.js'
+import { executePreToolHooks, executePostToolHooks, executeStopHooks } from '../hooks/index.js'
 import { createBudgetTracker, checkBudget } from '../memory/index.js'
 import { shouldFlushMemory, buildFlushMessages } from '../memory/flush.js'
 import { shouldCompact, autoCompactMessages, COMPACT_PROMPT, runCompactionPipeline } from '../memory/compact.js'
@@ -49,6 +49,7 @@ type TransitionReason =
   | 'model_error'                     // 模型调用失败
   | 'reflection_retry'                // 反思后重试
   | 'self_check'                      // 自我检查注入
+  | 'stop_hook_blocking'              // Stop hook 注入继续信号
 
 interface StreamingToolResult {
   toolCallId: string
@@ -501,6 +502,25 @@ export async function runQuery(
           messages.push({ role: 'user', content: SELF_CHECK_PROMPT })
           state.transition = { reason: 'self_check', detail: '注入自我检查' }
           continue
+        }
+      }
+
+      // ─── Stop Hooks（CC-inspired）──────────────────────────────
+      // 模型停止调用工具时，hooks 可以注入 blocking error 强制继续
+      if (state.totalToolRounds > 0) {
+        const stopResult = await executeStopHooks({
+          messages: messages as any,
+          turnCount: state.turn,
+          totalToolRounds: state.totalToolRounds,
+        })
+
+        if (stopResult.blockingErrors.length > 0 && !stopResult.preventContinuation) {
+          // 注入 blocking error 为用户消息，循环继续
+          for (const error of stopResult.blockingErrors) {
+            messages.push({ role: 'user', content: error, isMeta: true } as any)
+          }
+          state.transition = { reason: 'stop_hook_blocking', detail: `${stopResult.blockingErrors.length} 个 stop hook 注入` }
+          continue  // ← 循环不退出！
         }
       }
 

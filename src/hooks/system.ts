@@ -10,6 +10,7 @@ import { execSync } from 'child_process'
 export enum HookEvent {
   PreToolUse = 'PreToolUse',
   PostToolUse = 'PostToolUse',
+  Stop = 'Stop',
 }
 
 const HOOKS_DIR = join(homedir(), '.edgecli', 'hooks')

@@ -6,7 +6,7 @@ import { evaluateExecution } from './policy.js'
 import { executeShellHook, HookEvent as ShellHookEvent } from './system.js'
 
 // ─── Hook 类型 ──────────────────────────────────────────────────────────
-export type HookEventType = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
+export type HookEventType = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'Stop'
 
 export interface HookInput {
   hook_event_name: HookEventType
@@ -30,10 +30,12 @@ export type HookFn = (input: HookInput) => Promise<HookOutput | null>
 const preToolHooks: HookFn[] = []
 const postToolHooks: HookFn[] = []
 const postToolFailureHooks: HookFn[] = []
+const stopHooks: HookFn[] = []
 
 export function registerPreToolHook(hook: HookFn) { preToolHooks.push(hook) }
 export function registerPostToolHook(hook: HookFn) { postToolHooks.push(hook) }
 export function registerPostToolFailureHook(hook: HookFn) { postToolFailureHooks.push(hook) }
+export function registerStopHook(hook: HookFn) { stopHooks.push(hook) }
 
 // ─── PreToolUse Hooks ──────────────────────────────────────────────────
 export async function executePreToolHooks(
@@ -138,4 +140,48 @@ export async function executePostToolHooks(
   }
 
   return result
+}
+
+// ─── Stop Hooks（CC-inspired）─────────────────────────────────────────
+// 当模型停止调用工具时执行。如果 hook 返回 blockingMessage，
+// 注入为用户消息强制循环继续。
+export interface StopHookResult {
+  blockingErrors: string[]     // 注入到 messages 的错误信息
+  preventContinuation: boolean // 是否阻止继续
+}
+
+export async function executeStopHooks(context: {
+  messages: Array<{ role: string; content: string }>
+  turnCount: number
+  totalToolRounds: number
+}): Promise<StopHookResult> {
+  const blockingErrors: string[] = []
+  let preventContinuation = false
+
+  const input: HookInput = {
+    hook_event_name: 'Stop',
+    tool_name: '',
+    tool_input: { turnCount: context.turnCount, totalToolRounds: context.totalToolRounds },
+  }
+
+  for (const hook of stopHooks) {
+    const output = await hook(input)
+    if (output?.hookSpecificOutput?.blockingMessage) {
+      blockingErrors.push(output.hookSpecificOutput.blockingMessage)
+    }
+    if (output?.hookSpecificOutput?.permissionBehavior === 'deny') {
+      preventContinuation = true
+    }
+  }
+
+  // 运行 shell hook
+  const shellResult = executeShellHook(ShellHookEvent.Stop, {
+    toolName: '',
+    toolInput: { turnCount: context.turnCount, totalToolRounds: context.totalToolRounds },
+  })
+  if (shellResult?.message) {
+    blockingErrors.push(shellResult.message)
+  }
+
+  return { blockingErrors, preventContinuation }
 }
