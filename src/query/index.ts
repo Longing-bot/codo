@@ -12,7 +12,7 @@
 //   - 自动调试（失败时收集错误上下文反馈给 LLM）
 //   - 成本追踪
 
-import { CodoConfig, Message, detectProvider, getUsageTracker, type TokenUsage } from '../config/index.js'
+import { CodoConfig, Message, detectProvider, getUsageTracker, type TokenUsage, type ToolCall } from '../config/index.js'
 import { callLLM } from '../api/index.js'
 import { findTool, toOpenAI, toAnthropic, getActiveTools, activateLazyTool, CORE_TOOLS, LAZY_TOOLS, type ToolResult } from '../tools/index.js'
 import { buildSystemPrompt } from '../prompts/system.js'
@@ -50,6 +50,13 @@ type TransitionReason =
   | 'reflection_retry'                // 反思后重试
   | 'self_check'                      // 自我检查注入
 
+interface StreamingToolResult {
+  toolCallId: string
+  toolName: string
+  args: Record<string, any>
+  result: ToolResult
+}
+
 interface QueryState {
   turn: number
   messages: Message[]
@@ -59,6 +66,8 @@ interface QueryState {
   totalToolRounds: number
   lastCallRecord: CallRecord | null
   taskId: string | null
+  // StreamingToolExecutor：流式接收期间已完成的工具结果
+  streamingResults: Map<string, Promise<StreamingToolResult>>
 }
 
 export interface QueryCallbacks {
@@ -374,6 +383,7 @@ export async function runQuery(
     totalToolRounds: 0,
     lastCallRecord: null,
     taskId: null,
+    streamingResults: new Map(),
   }
 
   // eslint-disable-next-line no-constant-condition
@@ -419,10 +429,38 @@ export async function runQuery(
       onText?.('\n📝 上下文已自动压缩，继续工作...\n')
     }
 
-    // ─── LLM 调用 ───────────────────────────────────────────────
+    // ─── LLM 调用（带 StreamingToolExecutor）──────────────────────
+    // 重置流式工具结果
+    state.streamingResults = new Map()
+
+    const streamingCallbacks = onToken || true ? {
+      onToken: onToken || (() => {}),
+      onToolUse: (tc: ToolCall) => {
+        // StreamingToolExecutor：工具块完成，立即开始执行
+        let args: Record<string, any>
+        try { args = JSON.parse(tc.function.arguments) } catch { args = {} }
+        onToolStart?.(tc.function.name, tc.function.arguments)
+
+        // 异步执行，不阻塞流式接收
+        const promise = (async (): Promise<StreamingToolResult> => {
+          // 权限检查
+          const perm = checkPermission(tc.function.name)
+          if (!perm.allowed) {
+            return { toolCallId: tc.id, toolName: tc.function.name, args, result: { content: perm.reason!, isError: true } }
+          }
+          // 执行
+          const result = await executeToolWithRetry(tc.function.name, args, callbacks)
+          onToolResult?.(tc.function.name, result)
+          return { toolCallId: tc.id, toolName: tc.function.name, args, result }
+        })()
+
+        state.streamingResults.set(tc.id, promise)
+      },
+    } : undefined
+
     let response
     try {
-      response = await callLLM(messages, tools, config, onToken ? { onToken } : undefined)
+      response = await callLLM(messages, tools, config, streamingCallbacks)
     } catch (ex: unknown) {
       state.transition = { reason: 'model_error', detail: ex instanceof Error ? ex.message : String(ex) }
       onError?.(ex instanceof Error ? ex.message : String(ex))
@@ -549,8 +587,17 @@ export async function runQuery(
       }
     }
 
-    // 并行执行所有工具调用
+    // ─── 并行工具执行（StreamingToolExecutor 优先使用流式结果）────────
     const toolPromises = response.toolCalls.map(async (tc) => {
+      // 如果流式接收期间已执行过，直接用结果
+      const streamingResult = state.streamingResults.get(tc.id)
+      if (streamingResult) {
+        const resolved = await streamingResult
+        // 已处理的工具需要补充文件变更追踪、自动 commit 等
+        return { toolCallId: resolved.toolCallId, result: resolved.result, toolName: resolved.toolName, args: resolved.args }
+      }
+
+      // 非流式执行（兜底）
       const toolName = tc.function.name
       let args: Record<string, any>
       try {

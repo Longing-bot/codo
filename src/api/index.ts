@@ -10,6 +10,7 @@ const MAX_RETRIES = 3
 // 流式回调接口
 export interface StreamCallbacks {
   onToken: (token: string) => void
+  onToolUse?: (toolCall: ToolCall) => void  // StreamingToolExecutor：工具块完成时立即触发
 }
 
 function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)) }
@@ -90,6 +91,8 @@ async function callAnthropic(
           }
           if (event.type === 'content_block_stop' && currentTool) {
             toolCalls.push(currentTool)
+            // StreamingToolExecutor：工具块完成，立即通知 query loop
+            stream.onToolUse?.(currentTool)
             currentTool = null
           }
           if (event.type === 'message_delta' && (event as any).usage) {
