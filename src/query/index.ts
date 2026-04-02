@@ -19,7 +19,7 @@ import { buildSystemPrompt } from '../prompts/system.js'
 import { executePreToolHooks, executePostToolHooks } from '../hooks/index.js'
 import { createBudgetTracker, checkBudget } from '../memory/index.js'
 import { shouldFlushMemory, buildFlushMessages } from '../memory/flush.js'
-import { shouldCompact, autoCompactMessages, COMPACT_PROMPT } from '../memory/compact.js'
+import { shouldCompact, autoCompactMessages, COMPACT_PROMPT, runCompactionPipeline } from '../memory/compact.js'
 import { checkPermission } from '../permissions/index.js'
 import { collectContext, formatContextForPrompt } from '../context/index.js'
 import { snapshotBefore, recordChange, formatChangeSummary } from '../tracker/index.js'
@@ -421,12 +421,15 @@ export async function runQuery(
       messages.push({ role: 'user', content: decision.nudgeMessage })
     }
 
-    // 自动压缩（200K 阈值）
-    if (shouldCompact(messages, 200_000)) {
-      const compacted = autoCompactMessages(messages)
+    // 5层压缩流水线（CC-inspired）
+    // Layer 1: 每轮截断超大工具结果
+    // Layer 2: 超过16条消息时 microcompact
+    // Layer 3: 超过200K时 auto compact
+    const { messages: compacted, stagesRun } = runCompactionPipeline(messages)
+    if (stagesRun.length > 0) {
       messages.length = 0
       messages.push(...compacted)
-      onText?.('\n📝 上下文已自动压缩，继续工作...\n')
+      onText?.(`\n📝 压缩流水线: ${stagesRun.join(' → ')}，继续工作...\n`)
     }
 
     // ─── LLM 调用（带 StreamingToolExecutor）──────────────────────

@@ -81,16 +81,61 @@ export function shouldCompact(messages: Message[], maxTokens: number = 80000): b
   return estimateMessageTokens(messages) > maxTokens
 }
 
-// CC pattern: automatic compaction - keep last 4 messages + summary
+// ─── 5层压缩流水线（CC-inspired）────────────────────────────────────
+
+const TOOL_RESULT_BUDGET = 4000  // 单个工具结果最大字符数
+
+// Layer 1: Tool Result Budget — 截断超大的工具结果
+export function applyToolResultBudget(messages: Message[]): Message[] {
+  return messages.map(m => {
+    if (m.role === 'tool' && m.content && m.content.length > TOOL_RESULT_BUDGET) {
+      const truncated = m.content.slice(0, TOOL_RESULT_BUDGET)
+      const omitted = m.content.length - TOOL_RESULT_BUDGET
+      return { ...m, content: `${truncated}\n\n[... ${omitted} 字符已截断 ...]` }
+    }
+    return m
+  })
+}
+
+// Layer 2: Microcompact — 压缩旧的工具结果（保留最近 N 轮）
+export function microcompact(messages: Message[], keepRecentRounds: number = 4): Message[] {
+  if (messages.length < 8) return messages
+
+  // 找到最近 N 轮工具调用的边界
+  let toolResultCount = 0
+  let cutIndex = messages.length - 1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'tool') {
+      toolResultCount++
+      if (toolResultCount > keepRecentRounds * 2) {  // 每轮约2个工具结果
+        cutIndex = i
+        break
+      }
+    }
+  }
+
+  // 截断 cutIndex 之前的工具结果为摘要
+  return messages.map((m, i) => {
+    if (i < cutIndex && m.role === 'tool' && m.content && m.content.length > 200) {
+      const lines = m.content.split('\n')
+      const summary = lines.length > 3
+        ? `${lines[0]}\n${lines[1]}\n... (${lines.length} 行, ${m.content.length} 字符)`
+        : m.content.slice(0, 200) + '...'
+      return { ...m, content: summary }
+    }
+    return m
+  })
+}
+
+// Layer 3: Auto Compact — 全局压缩（最后手段）
 export function autoCompactMessages(messages: Message[]): Message[] {
-  if (messages.length < 6) return messages // too short to compact
+  if (messages.length < 6) return messages
 
-  // Keep system prompt (first message) + last 4 messages
+  // 保留系统消息 + 最近 6 条
   const systemMsg = messages[0]
-  const recent = messages.slice(-4)
+  const recent = messages.slice(-6)
 
-  // Generate a summary placeholder from the middle messages
-  const middle = messages.slice(1, -4)
+  const middle = messages.slice(1, -6)
   const userMsgs = middle.filter(m => m.role === 'user')
   const toolCalls = middle.filter(m => m.role === 'tool')
   const summary = `[自动压缩] 之前 ${middle.length} 条消息已压缩。包含 ${userMsgs.length} 条用户消息和 ${toolCalls.length} 次工具调用。`
@@ -100,6 +145,32 @@ export function autoCompactMessages(messages: Message[]): Message[] {
     { role: 'user', content: `<conversation_summary>\n${summary}\n</conversation_summary>\n\nBased on the summary above, continue where we left off.` },
     ...recent,
   ]
+}
+
+// 完整的压缩流水线：按层执行
+export function runCompactionPipeline(messages: Message[]): { messages: Message[]; stagesRun: string[] } {
+  const stagesRun: string[] = []
+  let result = messages
+
+  // Layer 1: 截断超大工具结果（每次都执行，廉价）
+  const budgeted = applyToolResultBudget(result)
+  if (budgeted !== result) stagesRun.push('tool_result_budget')
+  result = budgeted
+
+  // Layer 2: Microcompact（超过 16 条消息时执行）
+  if (result.length > 16) {
+    const micro = microcompact(result)
+    if (micro !== result) stagesRun.push('microcompact')
+    result = micro
+  }
+
+  // Layer 3: Auto compact（超过阈值时执行）
+  if (shouldCompact(result, 200_000)) {
+    result = autoCompactMessages(result)
+    stagesRun.push('autocompact')
+  }
+
+  return { messages: result, stagesRun }
 }
 
 // CC pattern: get the compaction request messages
