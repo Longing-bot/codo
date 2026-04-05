@@ -20,6 +20,7 @@ import { executePreToolHooks, executePostToolHooks, executeStopHooks } from '../
 import { createBudgetTracker, checkBudget } from '../memory/index.js'
 import { shouldFlushMemory, buildFlushMessages } from '../memory/flush.js'
 import { shouldExtractMemory, extractSessionMemory, loadSessionMemory } from '../memory/sessionMemory.js'
+import { shouldExtractGlobalMemories, extractGlobalMemories, loadGlobalMemories } from '../memory/extractMemories.js'
 import { shouldCompact, autoCompactMessages, COMPACT_PROMPT, runCompactionPipeline } from '../memory/compact.js'
 import { checkPermission } from '../permissions/index.js'
 import { collectContext, formatContextForPrompt } from '../context/index.js'
@@ -315,13 +316,15 @@ export async function runQuery(
   // 初始化 workspace session
   initWorkspaceSession(config.model)
 
-  // 系统提示词（带上下文感知）
-  if (!messages.length || messages[0].role !== 'system') {
-    const context = collectContext(true)
-    const contextStr = formatContextForPrompt(context)
-    const systemPrompt = buildSystemPrompt()
-    // 将上下文注入系统提示
-    messages.unshift({ role: 'system', content: systemPrompt.replace('</environment>', `${contextStr}\n</environment>`) })
+  // 加载长期记忆注入到系统提示
+  const globalMemories = loadGlobalMemories(3)
+  if (globalMemories) {
+    const sysIdx = messages.findIndex(m => m.role === 'system')
+    if (sysIdx >= 0) {
+      messages[sysIdx].content = messages[sysIdx].content + '\n\n' + globalMemories
+    } else {
+      messages.unshift({ role: 'system', content: globalMemories })
+    }
   }
 
   messages.push({ role: 'user', content: userMessage })
@@ -533,6 +536,14 @@ export async function runQuery(
       // 标记任务完成
       if (state.taskId) {
         updateTaskStatus(state.taskId, 'completed')
+      }
+
+      // Global Memory Extraction（任务完成后触发，CC-inspired）
+      if (shouldExtractGlobalMemories(1)) {
+        extractGlobalMemories(messages, async (msgs) => {
+          const resp = await callLLM(msgs, [], config)
+          return resp.content
+        }).catch(() => {})  // 静默失败
       }
 
       state.transition = { reason: 'completed', detail: `共 ${state.totalToolRounds} 轮工具调用` }

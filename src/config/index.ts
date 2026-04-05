@@ -15,7 +15,7 @@ export interface CodoConfig {
   baseUrl: string
   model: string
   maxTokens: number
-  provider: 'openai' | 'anthropic' | 'openrouter'
+  provider: 'openai' | 'anthropic' | 'openrouter' | 'ollama'
   autoApprove: boolean
 }
 
@@ -174,7 +174,7 @@ export function validateConfig(config: CodoConfig): ConfigWarning[] {
     warnings.push({ field: 'maxTokens', message: `maxTokens=${config.maxTokens} 可能超出模型限制`, fix: '确认模型是否支持此 token 上限' })
   }
 
-  const validProviders = ['openai', 'anthropic', 'openrouter']
+  const validProviders = ['openai', 'anthropic', 'openrouter', 'ollama']
   if (config.provider && !validProviders.includes(config.provider)) {
     warnings.push({ field: 'provider', message: `未知 provider: ${config.provider}`, fix: `可选: ${validProviders.join(', ')}` })
   }
@@ -223,6 +223,7 @@ export function hasApiKey(c: CodoConfig): boolean {
 }
 export function detectProvider(c: CodoConfig): string {
   if (c.provider) return c.provider
+  if (c.baseUrl.includes('11434') || c.baseUrl.includes('ollama')) return 'ollama'
   if (c.baseUrl.endsWith('/v1') || c.baseUrl.includes('/v1/')) return 'openai'
   return 'anthropic'
 }
